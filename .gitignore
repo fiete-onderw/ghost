@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Persoonlijke gegevens horen NOOIT in de repo.
+# Ghost bewaart ze buiten deze map (%LOCALAPPDATA%\Ghost), maar voor de
+# zekerheid negeren we ze hier ook.
+favorites.json
+favorieten.json
+config.toml
+logs/
+*.log
+
+# Geen programma's of installatiebestanden in de repo
+*.exe
+*.msi
+*.dll
+
+# Editor en besturingssysteem
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

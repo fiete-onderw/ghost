@@ -1,0 +1,29 @@
+[project]
+name = "ghost"
+version = "0.1.0"
+description = "Zichtbare, tijdelijke locatiesimulatie voor je eigen iPhone - veiligheid eerst."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "GPL-3.0-or-later"
+dependencies = [
+    # Exact vastgepind: deze library verandert bijna dagelijks. Bijwerken doe je
+    # bewust (later via update.bat), nooit per ongeluk.
+    "pymobiledevice3==11.53.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=1",
+]
+
+[tool.uv]
+# Ghost wordt niet als pakket gebouwd of geinstalleerd; je start het vanuit
+# deze map met `uv run python -m ghost`. Dat scheelt een bouwstap.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
