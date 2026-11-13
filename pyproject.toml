@@ -9,12 +9,19 @@ dependencies = [
     # Exact vastgepind: deze library verandert bijna dagelijks. Bijwerken doe je
     # bewust (later via update.bat), nooit per ongeluk.
     "pymobiledevice3==11.53.0",
+    # De webserver achter de pagina in je browser. pymobiledevice3 gebruikt
+    # dezelfde twee pakketten zelf ook; hier staan ze erbij omdat Ghost ze nu
+    # rechtstreeks gebruikt. Ook exact vastgepind.
+    "fastapi==0.162.5",
+    "uvicorn==0.54.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=1",
+    # Alleen voor de tests: hiermee doet een test alsof hij een browser is.
+    "httpx>=0.28",
 ]
 
 [tool.uv]

@@ -1,13 +1,19 @@
-"""Ghost in de terminal (bouwstap 1 en 2).
+"""Ghost starten vanuit de terminal.
 
-Hiermee test je de basis voordat er een webpagina omheen komt:
+De gewone manier is de webpagina (dat doet start.bat ook):
+
+    uv run python -m ghost web
+
+Daarnaast zijn er losse commando's om de basis te testen zonder webpagina:
 
     uv run python -m ghost status
     uv run python -m ghost set 52.3676 4.9041
     uv run python -m ghost clear
 
 Met --demo praat Ghost tegen een nep-iPhone, zodat je alles kunt proberen
-zonder toestel.
+zonder toestel:
+
+    uv run python -m ghost --demo web
 """
 
 from __future__ import annotations
@@ -310,14 +316,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     commands.add_parser("clear", help="vraag de echte locatie terug")
+
+    web_parser = commands.add_parser("web", help="start de webpagina in je browser (de gewone manier)")
+    web_parser.add_argument(
+        "--port", type=_port, default=8765, metavar="N", help="poort op je eigen laptop (standaard 8765)"
+    )
+    web_parser.add_argument("--no-browser", action="store_true", help="open de browser niet vanzelf")
+    # Alleen voor ontwikkelaars, samen met --demo: laat de nep-iPhone een probleem nabootsen.
+    web_parser.add_argument("--demo-problem", choices=[p.value for p in Problem], help=argparse.SUPPRESS)
     return parser
 
 
-def make_device(demo: bool) -> LocationDevice:
+def _port(text: str) -> int:
+    try:
+        port = int(text)
+    except ValueError:
+        port = 0
+    if not 1024 <= port <= 65535:
+        raise argparse.ArgumentTypeError("kies een poort tussen 1024 en 65535")
+    return port
+
+
+def make_device(demo: bool, demo_problem: str | None = None) -> LocationDevice:
     if demo:
         from ghost.device.fake import FakeDevice
 
-        return FakeDevice()
+        return FakeDevice(problem=Problem(demo_problem) if demo_problem else None)
     # Pas hier importeren: het laden van pymobiledevice3 duurt even.
     from ghost.device.iphone import IPhone
 
@@ -362,7 +386,20 @@ def main(argv: list[str] | None = None, device: LocationDevice | None = None) ->
     if args.demo:
         say("[DEMO] Er wordt een nep-iPhone gebruikt. Er gebeurt niets met een echt toestel.")
     if device is None:
-        device = make_device(args.demo)
+        device = make_device(args.demo, getattr(args, "demo_problem", None))
+
+    if args.command == "web":
+        # Pas hier importeren: de webserver laden kost tijd die de losse commando's niet nodig hebben.
+        from ghost.web.server import run_web
+
+        return run_web(
+            device=device,
+            demo=args.demo,
+            debug=args.debug,
+            port=args.port,
+            browser=not args.no_browser,
+            log_path=log_path,
+        )
 
     coroutine = run(args, device, log_path)
     try:

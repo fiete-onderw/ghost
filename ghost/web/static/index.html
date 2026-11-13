@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Het sessietoken. Ghost vult dit in bij het versturen van de pagina.
+       Het staat bewust NIET in het webadres. -->
+  <meta name="ghost-token" content="{{GHOST_TOKEN}}">
+  <title>Ghost</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- De opvallende balk. Alleen zichtbaar als er (mogelijk) een nep-locatie actief is. -->
+  <div id="banner" class="banner" role="alert" hidden>
+    <span id="banner-title" class="banner-title"></span>
+    <span id="banner-text" class="banner-text"></span>
+  </div>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <header class="brand">
+        <div class="brand-row">
+          <h1>Ghost</h1>
+          <span id="demo-badge" class="badge" hidden>DEMO &ndash; nep-iPhone</span>
+        </div>
+        <p class="tagline">Zichtbare, tijdelijke locatiesimulatie voor je eigen iPhone</p>
+      </header>
+
+      <!-- De rode knop staat er ALTIJD en mag altijd. -->
+      <div class="stop-box">
+        <button id="stop" class="btn btn-stop" type="button">
+          <span class="stop-square" aria-hidden="true"></span>
+          <span id="stop-label">Stop &ndash; echte locatie terug</span>
+          <kbd>Esc</kbd>
+        </button>
+        <p id="stop-state" class="stop-state"></p>
+      </div>
+
+      <div id="notice" class="notice" role="status" hidden>
+        <div class="notice-head">
+          <strong id="notice-title"></strong>
+          <button id="notice-close" class="notice-close" type="button" aria-label="Melding sluiten">&times;</button>
+        </div>
+        <p id="notice-text"></p>
+        <p id="notice-hint" class="notice-hint"></p>
+      </div>
+
+      <section class="card" aria-labelledby="device-heading">
+        <div class="card-head">
+          <h2 id="device-heading">1. Je iPhone</h2>
+          <button id="check" class="btn btn-small" type="button">Opnieuw controleren</button>
+        </div>
+        <div id="device"></div>
+      </section>
+
+      <section class="card" aria-labelledby="location-heading">
+        <h2 id="location-heading">2. Kies een plek</h2>
+
+        <div id="active-box" class="active-box" hidden>
+          <p class="active-line">Nep-locatie actief op <strong id="active-coords"></strong></p>
+          <p class="active-line">
+            Stopt vanzelf over <strong id="active-remaining"></strong>
+            <button id="extend" class="btn btn-small" type="button">+15 min</button>
+          </p>
+          <p class="muted">Klik op een andere plek op de kaart om de nep-locatie te verplaatsen.</p>
+        </div>
+
+        <p class="muted">Klik op de kaart, of plak co&ouml;rdinaten (breedtegraad, lengtegraad):</p>
+        <form id="coords-form" class="row" autocomplete="off">
+          <input id="coords" type="text" inputmode="text" spellcheck="false" maxlength="200"
+                 placeholder="52.3676, 4.9041" aria-label="Co&ouml;rdinaten">
+          <button class="btn btn-small" type="submit">Toon op kaart</button>
+        </form>
+        <p id="coords-error" class="field-error" hidden></p>
+
+        <p id="selected-line" class="selected-line">Nog geen plek gekozen.</p>
+
+        <label class="row row-label" for="minutes">
+          <span>Stop vanzelf na</span>
+          <select id="minutes"></select>
+        </label>
+
+        <button id="set" class="btn btn-primary" type="button" disabled>Zet nep-locatie hier</button>
+        <p id="set-hint" class="muted"></p>
+        <p id="set-error" class="field-error" hidden></p>
+      </section>
+
+      <footer class="foot">
+        <p>
+          Ghost is <strong>niet onzichtbaar</strong> voor apps en is alleen bedoeld voor je eigen iPhone.
+          Sluit je dit tabblad, dan blijft een actieve nep-locatie staan tot de timer afloopt of je Ghost afsluit.
+        </p>
+        <p id="log-line" class="muted" hidden>Logbestand: <code id="log-path"></code></p>
+        <button id="quit" class="btn btn-small" type="button">Ghost afsluiten</button>
+        <p class="muted version">Ghost <span id="version"></span></p>
+      </footer>
+    </aside>
+
+    <main id="map" class="map" aria-label="Kaart"></main>
+  </div>
+
+  <!-- Verschijnt als de pagina geen contact meer heeft met Ghost. -->
+  <div id="overlay" class="overlay" role="alertdialog" aria-modal="true" aria-labelledby="overlay-title" hidden>
+    <div class="overlay-box">
+      <h2 id="overlay-title"></h2>
+      <p id="overlay-text"></p>
+      <p id="overlay-warning" class="overlay-warning" hidden></p>
+      <p id="overlay-foot" class="muted"></p>
+    </div>
+  </div>
+
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

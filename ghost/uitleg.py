@@ -19,7 +19,19 @@ RUN = "uv run python -m ghost"
 class Uitleg:
     titel: str
     wat: str
-    stappen: tuple[str, ...]
+    stappen: tuple[str, ...]  #: voor de terminal: met commando's om te plakken
+    #: Voor de webpagina: dezelfde stappen, maar met een knop in plaats van een
+    #: commando. Leeg betekent: de stappen voor de terminal passen ook hier.
+    web_stappen: tuple[str, ...] = ()
+    #: Welke knop de webpagina erbij toont: "pair", "reveal" of "mount".
+    actie: str | None = None
+    actie_tekst: str = ""
+    #: Een webadres dat erbij hoort (bijvoorbeeld de download van iTunes).
+    link: str | None = None
+    link_tekst: str = ""
+
+    def stappen_voor_web(self) -> tuple[str, ...]:
+        return self.web_stappen or self.stappen
 
 
 def _apple_service() -> Uitleg:
@@ -32,6 +44,13 @@ def _apple_service() -> Uitleg:
                 "Gebruik niet de versie uit de Microsoft Store en niet de app 'Apple Devices'.",
                 "Herstart daarna je laptop en probeer het opnieuw.",
             ),
+            web_stappen=(
+                "Installeer iTunes van de website van Apple (knop hieronder).",
+                "Gebruik niet de versie uit de Microsoft Store en niet de app 'Apple Devices'.",
+                "Herstart daarna je laptop en start Ghost opnieuw.",
+            ),
+            link=ITUNES_URL,
+            link_tekst="iTunes downloaden bij Apple",
         )
     return Uitleg(
         "De USB-service voor iPhones draait niet",
@@ -54,6 +73,7 @@ _UITLEG: dict[Problem, Uitleg] = {
         "De iPhone is vergrendeld",
         "De iPhone geeft pas toegang als hij ontgrendeld is.",
         ("Ontgrendel de iPhone, laat het scherm aan en probeer het opnieuw.",),
+        web_stappen=("Ontgrendel de iPhone en laat het scherm aan. Ghost probeert het vanzelf opnieuw.",),
     ),
     Problem.NOT_TRUSTED: Uitleg(
         "De iPhone vertrouwt deze laptop nog niet",
@@ -62,6 +82,13 @@ _UITLEG: dict[Problem, Uitleg] = {
             f"Voer uit:  {RUN} pair",
             "Tik op de iPhone op 'Vertrouw' en voer je toegangscode in.",
         ),
+        web_stappen=(
+            "Ontgrendel de iPhone en laat het scherm aan.",
+            "Klik hieronder op 'Koppel de iPhone'.",
+            "Tik op de iPhone op 'Vertrouw' en voer je toegangscode in. Je hebt daar 60 seconden voor.",
+        ),
+        actie="pair",
+        actie_tekst="Koppel de iPhone",
     ),
     Problem.IOS_TOO_OLD: Uitleg(
         "Deze iOS-versie wordt niet ondersteund",
@@ -77,6 +104,14 @@ _UITLEG: dict[Problem, Uitleg] = {
             "De iPhone herstart. Ontgrendel hem daarna en bevestig met 'Schakel in'.",
             "Je hoeft je toegangscode hiervoor NIET te verwijderen.",
         ),
+        web_stappen=(
+            "Klik hieronder op 'Maak de schakelaar zichtbaar'.",
+            "Op de iPhone: Instellingen > Privacy en beveiliging > Developer Mode (helemaal onderaan) > aan.",
+            "De iPhone herstart. Ontgrendel hem daarna en bevestig met 'Schakel in'.",
+            "Je hoeft je toegangscode hiervoor NIET te verwijderen.",
+        ),
+        actie="reveal",
+        actie_tekst="Maak de schakelaar zichtbaar",
     ),
     Problem.TUNNEL_FAILED: Uitleg(
         "De beveiligde verbinding met de iPhone kwam niet tot stand",
@@ -86,6 +121,12 @@ _UITLEG: dict[Problem, Uitleg] = {
             "Haal de kabel eruit, steek hem er weer in en probeer het opnieuw.",
             "Sluit andere vensters waarin Ghost of pymobiledevice3 draait.",
             "Blijft het misgaan? Deel dan het logbestand (pad staat hieronder).",
+        ),
+        web_stappen=(
+            "Ontgrendel de iPhone en laat het scherm aan.",
+            "Haal de kabel eruit en steek hem er weer in. Ghost probeert het vanzelf opnieuw.",
+            "Sluit andere vensters waarin Ghost of pymobiledevice3 draait.",
+            "Blijft het misgaan? Deel dan het logbestand (pad staat onderaan).",
         ),
     ),
     Problem.LOCATION_SERVICE_UNAVAILABLE: Uitleg(
@@ -97,6 +138,13 @@ _UITLEG: dict[Problem, Uitleg] = {
             "GitHub (download) en Apple (ondertekening).",
             f"Voer daarna opnieuw uit:  {RUN} status",
         ),
+        web_stappen=(
+            "Klik hieronder op 'Zet het ontwikkelaars-image op de iPhone'.",
+            "Daarbij maakt je laptop contact met GitHub (download) en Apple (ondertekening).",
+            "Ghost controleert daarna vanzelf opnieuw.",
+        ),
+        actie="mount",
+        actie_tekst="Zet het ontwikkelaars-image op de iPhone",
     ),
     Problem.CONNECTION_LOST: Uitleg(
         "De verbinding met de iPhone is weggevallen",
@@ -106,11 +154,20 @@ _UITLEG: dict[Problem, Uitleg] = {
             f"Voer uit:  {RUN} clear   om de echte locatie terug te vragen.",
             "Kijk in Apple Kaarten of je echte locatie weer klopt.",
         ),
+        web_stappen=(
+            "Controleer de kabel en ontgrendel de iPhone.",
+            "Klik op de rode knop 'Stop - echte locatie terug'.",
+            "Kijk in Apple Kaarten of je echte locatie weer klopt.",
+        ),
     ),
     Problem.UNKNOWN: Uitleg(
         "Er ging iets onverwachts mis",
         "Ghost herkent deze fout niet.",
         ("Deel het logbestand (pad staat hieronder), dan kan het worden uitgezocht.",),
+        web_stappen=(
+            "Klik op 'Opnieuw controleren'.",
+            "Blijft het misgaan? Deel dan het logbestand (pad staat onderaan), dan kan het worden uitgezocht.",
+        ),
     ),
 }
 
