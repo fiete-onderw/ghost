@@ -8,8 +8,18 @@ Elk adres doet één ding en geeft altijd de complete stand van zaken terug
     GET  /api/state          de stand van zaken
     POST /api/parse          tekst zoals "52.37, 4.90" omzetten naar coördinaten
     POST /api/location       een vaste nep-locatie zetten
+    POST /api/nudge          de nep-locatie een stukje verschuiven
     POST /api/stop           de echte locatie terugvragen
     POST /api/timer          de auto-stop-timer verlengen
+    POST /api/route/plan     een route uitrekenen (er gaat nog niets naar de iPhone)
+    POST /api/route/start    een uitgerekende route starten
+    POST /api/route/pause    pauze, en /api/route/resume om verder te gaan
+    POST /api/route/speed    de snelheid van de lopende route veranderen
+    GET  /api/route/path     de lijn van de lopende route, om te tekenen
+    GET  /api/favorites      je bewaarde plekken; POST om er een te bewaren,
+                             DELETE /api/favorites/{id} om er een te verwijderen
+    POST /api/settings       een instelling veranderen
+    POST /api/search         een adres zoeken (alleen als je dat hebt aangezet)
     POST /api/device/check   de iPhone opnieuw controleren
     POST /api/device/{actie} koppelen (pair), Developer Mode tonen (reveal) of het image plaatsen (mount)
     POST /api/quit           Ghost afsluiten
@@ -32,9 +42,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ghost import __version__
-from ghost.controller import Controller, ControllerError, problem_snapshot
+from ghost.controller import Controller, ControllerError, RoutePlan, problem_snapshot
 from ghost.coords import CoordinateError, format_for_screen, parse_latlon, validate
+from ghost.geo import LatLon
+from ghost.osm import MAX_WAYPOINTS, OsmError, SearchClient
 from ghost.safety import Reason
+from ghost.store import Favorites, Settings, StoreError
 from ghost.web.security import SECURITY_HEADERS, LocalGuard
 
 log = logging.getLogger(__name__)
@@ -69,13 +82,62 @@ class TimerBody(BaseModel):
     add_minutes: int
 
 
+class NudgeBody(BaseModel):
+    direction: str = Field(max_length=2)
+    meters: int
+
+
+class RoutePlanBody(BaseModel):
+    waypoints: list[tuple[float, float]] = Field(max_length=MAX_WAYPOINTS)
+    mode: str = Field(max_length=10)
+    round_trip: bool = False
+    repeat: bool = False
+
+
+class RouteStartBody(BaseModel):
+    plan_id: int
+    speed_kmh: float
+    minutes: int | None = None
+
+
+class SpeedBody(BaseModel):
+    speed_kmh: float
+
+
+class FavoriteBody(BaseModel):
+    name: str = Field(max_length=200)
+    lat: float
+    lon: float
+
+
+class SettingsBody(BaseModel):
+    address_search: bool
+
+
+class SearchBody(BaseModel):
+    q: str = Field(max_length=200)
+
+
+def _path_json(points: list[LatLon]) -> list[list[float]]:
+    """Een lijn als [[breedtegraad, lengtegraad], ...]. Zes decimalen is ongeveer 10 cm; meer is niet nodig."""
+    return [[round(point.lat, 6), round(point.lon, 6)] for point in points]
+
+
 def create_app(
     controller: Controller,
     *,
     token: str,
     port: int,
     on_quit: Callable[[], None] | None = None,
+    favorites: Favorites | None = None,
+    settings: Settings | None = None,
+    search: SearchClient | None = None,
 ) -> FastAPI:
+    # Zonder opgegeven opslag blijft alles in het geheugen (handig voor tests en de demo).
+    favorites = favorites or Favorites(None)
+    settings = settings or Settings(None)
+    search = search or SearchClient()
+
     for extension, file_type in FILE_TYPES.items():
         mimetypes.add_type(file_type, extension)
 
@@ -105,15 +167,24 @@ def create_app(
     # Foutafhandeling
     # ------------------------------------------------------------------
 
+    def full_state() -> dict[str, Any]:
+        state = controller.snapshot()
+        state["settings"] = settings.snapshot()
+        state["favorites_version"] = favorites.version
+        return state
+
     def ok(**extra: Any) -> JSONResponse:
-        return JSONResponse({"ok": True, **extra, "state": controller.snapshot()})
+        return JSONResponse({"ok": True, **extra, "state": full_state()})
 
     def refused(error: ControllerError, status: int = 409) -> JSONResponse:
         problem = problem_snapshot(error.problem, error.detail) if error.problem else None
         return JSONResponse(
-            {"ok": False, "error": error.message, "problem": problem, "state": controller.snapshot()},
+            {"ok": False, "error": error.message, "problem": problem, "state": full_state()},
             status_code=status,
         )
+
+    def failed(message: str, status: int = 400) -> JSONResponse:
+        return JSONResponse({"ok": False, "error": message, "state": full_state()}, status_code=status)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, error: RequestValidationError) -> JSONResponse:
@@ -135,7 +206,7 @@ def create_app(
                 if result.ok
                 else " Je echte locatie kon NIET worden teruggevraagd; Ghost blijft het proberen."
             )
-        return JSONResponse({"ok": False, "error": message, "state": controller.snapshot()}, status_code=500)
+        return JSONResponse({"ok": False, "error": message, "state": full_state()}, status_code=500)
 
     # ------------------------------------------------------------------
     # De pagina
@@ -190,11 +261,19 @@ def create_app(
                     "ok": False,
                     "error": "Je echte locatie kon NIET worden teruggevraagd. Ghost blijft het proberen.",
                     "problem": problem,
-                    "state": controller.snapshot(),
+                    "state": full_state(),
                 },
                 status_code=409,
             )
         return ok(confirmed=result.confirmed)
+
+    @app.post("/api/nudge")
+    async def nudge(body: NudgeBody) -> JSONResponse:
+        try:
+            await controller.nudge(body.direction, body.meters)
+        except ControllerError as error:
+            return refused(error)
+        return ok()
 
     @app.post("/api/timer")
     async def timer(body: TimerBody) -> JSONResponse:
@@ -203,6 +282,119 @@ def create_app(
         except ControllerError as error:
             return refused(error)
         return ok()
+
+    # ------------------------------------------------------------------
+    # Routes
+    # ------------------------------------------------------------------
+
+    def plan_json(plan: RoutePlan) -> dict[str, Any]:
+        return {
+            "id": plan.id,
+            "mode": plan.mode,
+            "round_trip": plan.round_trip,
+            "repeat": plan.repeat,
+            "length_m": round(plan.length_m, 1),
+            "path": _path_json(plan.route.path),
+        }
+
+    @app.post("/api/route/plan")
+    async def route_plan(body: RoutePlanBody) -> JSONResponse:
+        try:
+            waypoints = [validate(lat, lon) for lat, lon in body.waypoints]
+        except CoordinateError as error:
+            return failed(str(error))
+        try:
+            plan = await controller.plan_route(
+                waypoints, body.mode, round_trip=body.round_trip, repeat=body.repeat
+            )
+        except ControllerError as error:
+            return refused(error)
+        return ok(plan=plan_json(plan))
+
+    @app.post("/api/route/start")
+    async def route_start(body: RouteStartBody) -> JSONResponse:
+        try:
+            await controller.start_route(body.plan_id, body.speed_kmh, body.minutes)
+        except ControllerError as error:
+            return refused(error)
+        return ok()
+
+    @app.post("/api/route/pause")
+    async def route_pause() -> JSONResponse:
+        try:
+            controller.pause_route()
+        except ControllerError as error:
+            return refused(error)
+        return ok()
+
+    @app.post("/api/route/resume")
+    async def route_resume() -> JSONResponse:
+        try:
+            controller.resume_route()
+        except ControllerError as error:
+            return refused(error)
+        return ok()
+
+    @app.post("/api/route/speed")
+    async def route_speed(body: SpeedBody) -> JSONResponse:
+        try:
+            controller.set_route_speed(body.speed_kmh)
+        except ControllerError as error:
+            return refused(error)
+        return ok()
+
+    @app.get("/api/route/path")
+    async def route_path() -> JSONResponse:
+        try:
+            path = controller.route_path()
+        except ControllerError as error:
+            return refused(error)
+        return ok(path=_path_json(path))
+
+    # ------------------------------------------------------------------
+    # Favorieten, instellingen en adres zoeken
+    # ------------------------------------------------------------------
+
+    @app.get("/api/favorites")
+    async def favorites_list() -> JSONResponse:
+        return ok(favorites=favorites.list())
+
+    @app.post("/api/favorites")
+    async def favorites_add(body: FavoriteBody) -> JSONResponse:
+        try:
+            point = validate(body.lat, body.lon)
+            favorites.add(body.name, point)
+        except (CoordinateError, StoreError) as error:
+            return failed(str(error))
+        return ok(favorites=favorites.list())
+
+    @app.delete("/api/favorites/{item_id}")
+    async def favorites_remove(item_id: str) -> JSONResponse:
+        try:
+            favorites.remove(item_id)
+        except StoreError as error:
+            return failed(error.message)
+        return ok(favorites=favorites.list())
+
+    @app.post("/api/settings")
+    async def settings_change(body: SettingsBody) -> JSONResponse:
+        try:
+            settings.set_address_search(body.address_search)
+        except StoreError as error:
+            return failed(error.message)
+        log.info("Adres zoeken staat nu %s", "AAN" if settings.address_search else "UIT")
+        return ok()
+
+    @app.post("/api/search")
+    async def search_address(body: SearchBody) -> JSONResponse:
+        # Alleen als de gebruiker het zelf heeft aangezet (zie osm.py voor de regels).
+        if not settings.address_search:
+            return failed("Adres zoeken staat uit. Je kunt het aanzetten bij 'Instellingen'.", status=409)
+        try:
+            places = await search.search(body.q)
+        except OsmError as error:
+            return failed(error.message, status=502)
+        return ok(places=[{"name": place.name, "lat": place.lat, "lon": place.lon} for place in places])
 
     # ------------------------------------------------------------------
     # Het statuspaneel
@@ -238,7 +430,7 @@ def create_app(
                 "restored": restored,
                 "confirmed": confirmed,
                 "needs_restore": controller.safety.needs_restore,
-                "state": controller.snapshot(),
+                "state": full_state(),
             }
         )
         if on_quit is not None:

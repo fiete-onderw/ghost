@@ -5,8 +5,19 @@
 // stuurt jouw klikken door. Alle veiligheid zit in Ghost zelf: valt deze
 // pagina weg, dan blijven de timer en het opruimen gewoon werken.
 //
-// Tekst uit Ghost (zoals de naam van je iPhone) wordt altijd als platte tekst
-// getoond via textContent, nooit als HTML. Zo kan een rare naam geen kwaad.
+// Tekst uit Ghost of van internet (de naam van je iPhone, een zoekresultaat,
+// de naam van een favoriet) wordt altijd als platte tekst getoond via
+// textContent, nooit als HTML. Zo kan een rare naam geen kwaad.
+//
+// Indeling van dit bestand:
+//   1. Praten met Ghost
+//   2. De kaart
+//   3. Kleine hulpjes
+//   4. Tekenen (alles wat je ziet volgt uit `state`)
+//   5. Vaste plek, favorieten en zoeken
+//   6. Route
+//   7. Het venster "geen contact"
+//   8. Jouw klikken
 
 (function () {
   "use strict";
@@ -14,10 +25,11 @@
   const TOKEN = document.querySelector('meta[name="ghost-token"]').content;
   const POLL_MS = 1000;
   const EXTEND_MINUTES = 15;
+  const MAX_WAYPOINTS = 25;
   const $ = (id) => document.getElementById(id);
 
   let state = null; // laatste stand van zaken uit Ghost
-  let selected = null; // de plek die je hebt aangeklikt: {lat, lon, text}
+  let tab = "fixed"; // "fixed" (vaste plek) of "route"
   let failedPolls = 0;
   let stopped = false; // true nadat je op "Ghost afsluiten" hebt geklikt
   let stopBusy = false;
@@ -28,8 +40,29 @@
   let lastBannerMode = "none";
   let pollTimer = null;
 
+  // Vaste plek
+  let selected = null; // de plek die je hebt aangeklikt: {lat, lon, text}
+
+  // Favorieten en zoeken
+  let favorites = [];
+  let favoritesVersion = -1;
+  let favoritesLoading = false;
+  let saveTarget = null; // de plek die je aan het bewaren bent
+  let settingBusy = false;
+
+  // Route
+  let waypoints = []; // de punten die je hebt aangeklikt: [{lat, lon}]
+  let transport = "foot"; // "foot", "bike" of "car"
+  let plan = null; // de uitgerekende route: {id, length_m, path, key}
+  let planBusy = false;
+  let planError = "";
+  let planTimer = null;
+  let routeBusy = false;
+  let drawnRouteId = null; // welke lopende route er op de kaart getekend is
+  let speedDragging = false;
+
   // ---------------------------------------------------------------------
-  // Praten met Ghost
+  // 1. Praten met Ghost
   // ---------------------------------------------------------------------
 
   class ApiError extends Error {
@@ -40,10 +73,10 @@
     }
   }
 
-  async function api(path, body) {
-    const options = { method: "GET", headers: { "X-Ghost-Token": TOKEN }, cache: "no-store" };
+  async function api(path, body, method) {
+    const options = { method: method || "GET", headers: { "X-Ghost-Token": TOKEN }, cache: "no-store" };
     if (body !== undefined) {
-      options.method = "POST";
+      options.method = method || "POST";
       options.headers["Content-Type"] = "application/json";
       options.body = JSON.stringify(body);
     }
@@ -97,7 +130,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // De kaart
+  // 2. De kaart
   // ---------------------------------------------------------------------
 
   const map = L.map("map", { worldCopyJump: true }).setView([52.2, 5.3], 8);
@@ -110,37 +143,49 @@
       '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>-bijdragers',
   }).addTo(map);
 
-  function pin(kind, size) {
-    return L.divIcon({ className: "pin pin-" + kind, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
+  function pin(kind, size, label) {
+    return L.divIcon({
+      className: "pin pin-" + kind,
+      html: label === undefined ? "" : String(Number(label)), // alleen een getal, nooit vrije tekst
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2],
+    });
   }
 
   const selectedMarker = L.marker([0, 0], { icon: pin("selected", 22), interactive: false, keyboard: false });
-  const activeMarker = L.marker([0, 0], { icon: pin("active", 24), interactive: false, keyboard: false, zIndexOffset: 500 });
+  const activeMarker = L.marker([0, 0], {
+    icon: pin("active", 24),
+    interactive: false,
+    keyboard: false,
+    zIndexOffset: 500,
+  });
   activeMarker.bindTooltip("Nep-locatie", { permanent: true, direction: "top", offset: [0, -14], className: "pin-label" });
+
+  const waypointLayer = L.layerGroup(); // de genummerde punten van je route
+  const draftLine = L.polyline([], { color: "#14508c", weight: 3, opacity: 0.75, dashArray: "6 9" }); // nog niet uitgerekend
+  const planLine = L.polyline([], { color: "#14508c", weight: 5, opacity: 0.85 }); // uitgerekende route
+  const activeLine = L.polyline([], { color: "#c4122f", weight: 5, opacity: 0.75 }); // de route die nu loopt
 
   map.on("click", (event) => {
     const point = event.latlng.wrap();
-    select(point.lat, point.lng, false);
+    pick(point.lat, point.lng, false);
   });
 
-  function formatCoords(lat, lon) {
-    return lat.toFixed(5) + ", " + lon.toFixed(5);
-  }
-
-  function select(lat, lon, moveMap) {
-    selected = { lat: lat, lon: lon, text: formatCoords(lat, lon) };
-    selectedMarker.setLatLng([lat, lon]).addTo(map);
+  // Een plek aanwijzen. Op het tabblad "Vaste plek" kies je die plek; op het
+  // tabblad "Route" wordt het een volgend punt van de route.
+  function pick(lat, lon, moveMap) {
+    if (tab === "route") {
+      addWaypoint(lat, lon);
+    } else {
+      select(lat, lon);
+    }
     if (moveMap) {
       map.setView([lat, lon], Math.max(map.getZoom(), 14));
     }
-    $("coords").value = selected.text;
-    hide($("coords-error"));
-    hide($("set-error"));
-    renderLocation();
   }
 
   // ---------------------------------------------------------------------
-  // Kleine hulpjes
+  // 3. Kleine hulpjes
   // ---------------------------------------------------------------------
 
   function show(element) {
@@ -149,6 +194,11 @@
 
   function hide(element) {
     element.hidden = true;
+  }
+
+  function setError(id, message) {
+    $(id).textContent = message || "";
+    $(id).hidden = !message;
   }
 
   function el(tag, className, text) {
@@ -160,6 +210,10 @@
       element.textContent = text;
     }
     return element;
+  }
+
+  function formatCoords(lat, lon) {
+    return lat.toFixed(5) + ", " + lon.toFixed(5);
   }
 
   function formatRemaining(seconds) {
@@ -181,19 +235,24 @@
     return hours === 1 ? "1 uur" : hours + " uur";
   }
 
-  // ---------------------------------------------------------------------
-  // Tekenen: alles wat je ziet volgt uit `state`
-  // ---------------------------------------------------------------------
+  function formatDistance(meters) {
+    if (meters < 1000) {
+      return Math.round(meters) + " m";
+    }
+    const km = meters / 1000;
+    return km.toFixed(km < 100 ? 1 : 0).replace(".", ",") + " km";
+  }
 
-  function render(newState) {
-    state = newState;
-    renderBanner();
-    renderStop();
-    renderNotice();
-    renderDevice();
-    renderLocation();
-    renderMap();
-    renderFooter();
+  function formatDuration(seconds) {
+    if (seconds < 60) {
+      return "minder dan een minuut";
+    }
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) {
+      return minutes + " min";
+    }
+    const rest = minutes % 60;
+    return Math.floor(minutes / 60) + " uur" + (rest ? " " + rest + " min" : "");
   }
 
   function simulationMode() {
@@ -205,6 +264,42 @@
       return "uncertain";
     }
     return sim.active ? "active" : "none";
+  }
+
+  // Waarom je nu geen nep-locatie kunt zetten. Leeg betekent: het kan.
+  function blockReason() {
+    const mode = simulationMode();
+    if (state.app.closing) {
+      return "Ghost wordt afgesloten.";
+    }
+    if (mode === "lost" || mode === "uncertain") {
+      return "Eerst moet je echte locatie teruggevraagd zijn (rode knop).";
+    }
+    if (!state.device.ready) {
+      return "Je iPhone is nog niet klaar. Kijk bij '1. Je iPhone'.";
+    }
+    return "";
+  }
+
+  // ---------------------------------------------------------------------
+  // 4. Tekenen: alles wat je ziet volgt uit `state`
+  // ---------------------------------------------------------------------
+
+  function render(newState) {
+    state = newState;
+    renderBanner();
+    renderStop();
+    renderNotice();
+    renderDevice();
+    renderActive();
+    renderFixed();
+    renderRoute();
+    renderSearch();
+    renderMap();
+    renderFooter();
+    if (state.favorites_version !== favoritesVersion) {
+      loadFavorites();
+    }
   }
 
   function renderBanner() {
@@ -225,9 +320,14 @@
     banner.className = "banner banner-" + mode;
     if (mode === "active") {
       $("banner-title").textContent = "NEP-LOCATIE ACTIEF";
-      const remaining =
-        sim.remaining_s === null ? "" : " · stopt vanzelf over " + formatRemaining(sim.remaining_s);
-      $("banner-text").textContent = sim.text + remaining;
+      const parts = [sim.text];
+      if (sim.route && !sim.route.finished) {
+        parts.unshift(sim.route.paused ? "route op pauze" : "onderweg, " + sim.route.speed_kmh + " km/u");
+      }
+      if (sim.remaining_s !== null) {
+        parts.push("stopt vanzelf over " + formatRemaining(sim.remaining_s));
+      }
+      $("banner-text").textContent = parts.join(" · ");
       document.title = "● NEP-LOCATIE ACTIEF · Ghost";
     } else if (mode === "lost") {
       $("banner-title").textContent = sim.connection_lost
@@ -378,42 +478,68 @@
     return box;
   }
 
-  function renderLocation() {
-    if (!state) {
+  // Het gele blok dat je ziet zolang er een nep-locatie actief is.
+  function renderActive() {
+    const sim = state.simulation;
+    const route = sim.route;
+    const active = simulationMode() === "active";
+    $("active-box").hidden = !active;
+    if (!active) {
+      $("active-box").dataset.key = "";
       return;
     }
-    const sim = state.simulation;
-    const mode = simulationMode();
-
-    $("active-box").hidden = mode !== "active";
-    if (mode === "active") {
-      $("active-coords").textContent = sim.text;
-      $("active-remaining").textContent = sim.remaining_s === null ? "–" : formatRemaining(sim.remaining_s);
+    const activeKey = "actief:" + (route ? route.plan_id : "vast");
+    if ($("active-box").dataset.key !== activeKey) {
+      // Er is net iets gestart: schuif het gele blok in beeld, want daar zit de bediening.
+      $("active-box").dataset.key = activeKey;
+      setTimeout(() => $("active-box").scrollIntoView({ behavior: "smooth", block: "center" }), 0);
     }
+    const moving = Boolean(route && !route.finished);
+    let title = "Nep-locatie actief op";
+    if (route && route.finished) {
+      title = "Route klaar. Nep-locatie staat op";
+    } else if (route && route.paused) {
+      title = "Route op pauze bij";
+    } else if (route) {
+      title = "Onderweg, nu bij";
+    }
+    $("active-title").textContent = title;
+    $("active-coords").textContent = sim.text;
+    $("active-remaining").textContent = sim.remaining_s === null ? "–" : formatRemaining(sim.remaining_s);
 
-    const select = $("minutes");
-    if (select.options.length === 0) {
-      for (const minutes of state.timer.choices) {
-        const option = el("option", "", formatMinutes(minutes));
-        option.value = String(minutes);
-        option.selected = minutes === state.timer.default;
-        select.append(option);
+    $("route-live").hidden = !moving;
+    $("nudge-box").hidden = moving; // verschuiven kan alleen als de plek stilstaat
+    if (moving) {
+      const percent = route.length_m > 0 ? Math.min(100, (100 * route.travelled_m) / route.length_m) : 0;
+      $("route-bar").style.width = percent.toFixed(1) + "%";
+      $("route-bar").parentElement.setAttribute("aria-valuenow", String(Math.round(percent)));
+      const parts = [formatDistance(route.remaining_m) + " te gaan"];
+      if (!route.paused && route.eta_s !== null) {
+        parts.push("nog ongeveer " + formatDuration(route.eta_s));
+      }
+      if (route.repeat) {
+        parts.push("ronde " + route.lap);
+      }
+      $("route-progress").textContent = parts.join(" · ");
+      $("route-pause").textContent = route.paused ? "Verder" : "Pauze";
+      if (!speedDragging) {
+        $("live-speed").value = String(Math.round(route.speed_kmh));
+        $("live-speed-out").textContent = Math.round(route.speed_kmh) + " km/u";
       }
     }
+  }
 
+  function renderFixed() {
+    const mode = simulationMode();
+    fillTimer($("minutes"));
     $("selected-line").textContent = selected ? "Gekozen plek: " + selected.text : "Nog geen plek gekozen.";
+    $("selected-save").hidden = !selected;
 
-    const button = $("set");
-    let hint = "";
-    if (state.app.closing) {
-      hint = "Ghost wordt afgesloten.";
-    } else if (mode === "lost" || mode === "uncertain") {
-      hint = "Eerst moet je echte locatie teruggevraagd zijn (rode knop).";
-    } else if (!state.device.ready) {
-      hint = "Je iPhone is nog niet klaar. Kijk bij '1. Je iPhone'.";
-    } else if (!selected) {
+    let hint = blockReason();
+    if (!hint && !selected) {
       hint = "Klik eerst op de kaart om een plek te kiezen.";
     }
+    const button = $("set");
     button.disabled = setBusy || hint !== "";
     button.textContent = setBusy
       ? "Bezig…"
@@ -424,20 +550,162 @@
     $("set-hint").hidden = hint === "";
   }
 
+  function renderRoute() {
+    if (!state) {
+      return;
+    }
+    fillTimer($("route-minutes"));
+
+    // De lijst met punten.
+    const list = $("waypoints");
+    const key = JSON.stringify(waypoints);
+    if (list.dataset.key !== key) {
+      list.dataset.key = key;
+      list.replaceChildren();
+      waypoints.forEach((point, index) => {
+        const item = el("li");
+        item.append(el("span", "", formatCoords(point.lat, point.lon)));
+        const remove = el("button", "icon-btn", "×");
+        remove.type = "button";
+        remove.setAttribute("aria-label", "Punt " + (index + 1) + " weghalen");
+        remove.addEventListener("click", () => {
+          waypoints.splice(index, 1);
+          routeChanged();
+        });
+        item.append(remove);
+        list.append(item);
+      });
+    }
+    $("waypoints-empty").hidden = waypoints.length > 0;
+    if (waypoints.length === 1) {
+      $("waypoints-empty").hidden = false;
+      $("waypoints-empty").textContent = "Klik nu op de kaart voor het volgende punt.";
+    } else {
+      $("waypoints-empty").textContent =
+        "Nog geen punten. Klik op de kaart voor het beginpunt, en daarna voor elk volgend punt.";
+    }
+    $("waypoint-buttons").hidden = waypoints.length === 0;
+
+    const speed = Number($("speed").value);
+    $("speed-out").textContent = speed + " km/u";
+    $("route-credit").hidden = !$("road").checked;
+
+    // Samenvatting en waarschuwing.
+    const summary = $("route-summary");
+    const warning = $("route-warning");
+    hide(warning);
+    if (plan) {
+      const seconds = plan.length_m / (speed / 3.6);
+      const repeat = $("repeat").checked;
+      summary.textContent =
+        formatDistance(plan.length_m) +
+        " · ongeveer " +
+        formatDuration(seconds) +
+        " bij " +
+        speed +
+        " km/u" +
+        (repeat ? " per ronde" : "");
+      show(summary);
+      const timerMinutes = Number($("route-minutes").value);
+      if (repeat) {
+        warning.textContent = "De route herhaalt zich tot de timer afloopt (" + formatMinutes(timerMinutes) + ") of tot je stopt.";
+        show(warning);
+      } else if (seconds > timerMinutes * 60) {
+        warning.textContent =
+          "Let op: de route duurt langer dan de timer (" + formatMinutes(timerMinutes) + "). Kies een langere tijd, anders stopt de timer onderweg.";
+        show(warning);
+      }
+    } else {
+      hide(summary);
+    }
+
+    let hint = blockReason();
+    if (!hint && waypoints.length < 2) {
+      hint = "Klik minstens twee punten aan op de kaart.";
+    } else if (!hint && planBusy) {
+      hint = "Route wordt uitgerekend…";
+    } else if (!hint && !plan && !planError) {
+      hint = "Route wordt uitgerekend…";
+    }
+    const button = $("route-start");
+    button.disabled = routeBusy || !plan || blockReason() !== "";
+    button.textContent = routeBusy ? "Bezig…" : "Start route";
+    $("route-hint").textContent = planError ? "" : hint;
+    $("route-hint").hidden = planError !== "" || hint === "";
+    if (planError) {
+      setError("route-error", planError);
+    } else if (!routeBusy && $("route-error").dataset.kind !== "start") {
+      setError("route-error", "");
+    }
+  }
+
+  function fillTimer(select) {
+    if (select.options.length > 0) {
+      return;
+    }
+    for (const minutes of state.timer.choices) {
+      const option = el("option", "", formatMinutes(minutes));
+      option.value = String(minutes);
+      option.selected = minutes === state.timer.default;
+      select.append(option);
+    }
+  }
+
+  function renderSearch() {
+    const enabled = state.settings.address_search;
+    $("search-form").hidden = !enabled;
+    $("search-off").hidden = enabled;
+    if (!enabled) {
+      hide($("search-results"));
+      hide($("search-credit"));
+      setError("search-error", "");
+    }
+    if (!settingBusy) {
+      $("setting-search").checked = enabled;
+    }
+  }
+
   function renderMap() {
     const sim = state.simulation;
     if (sim.active) {
       activeMarker.setLatLng([sim.lat, sim.lon]).addTo(map);
+      const moving = Boolean(sim.route && !sim.route.finished && !sim.route.paused);
       if (!centeredOnActive) {
         // Bij het openen van de pagina terwijl er al iets actief is: laat zien waar.
         centeredOnActive = true;
         if (!map.getBounds().contains([sim.lat, sim.lon])) {
           map.setView([sim.lat, sim.lon], 14);
         }
+      } else if (moving && !map.getBounds().pad(-0.12).contains([sim.lat, sim.lon])) {
+        map.panTo([sim.lat, sim.lon]); // volg de bewegende stip
       }
     } else {
       activeMarker.remove();
       centeredOnActive = true;
+    }
+
+    // De lijn van de route die nu loopt.
+    const routeId = sim.active && sim.route ? sim.route.plan_id : null;
+    if (routeId !== drawnRouteId) {
+      drawnRouteId = routeId;
+      if (routeId === null) {
+        activeLine.remove();
+      } else if (plan && plan.id === routeId) {
+        activeLine.setLatLngs(plan.path).addTo(map);
+      } else {
+        loadActivePath(routeId);
+      }
+    }
+  }
+
+  async function loadActivePath(routeId) {
+    try {
+      const data = await api("/api/route/path");
+      if (drawnRouteId === routeId) {
+        activeLine.setLatLngs(data.path).addTo(map);
+      }
+    } catch (error) {
+      // De route is intussen gestopt; dan valt er niets te tekenen.
     }
   }
 
@@ -449,7 +717,349 @@
   }
 
   // ---------------------------------------------------------------------
-  // Het venster "geen contact"
+  // 5. Vaste plek, favorieten en zoeken
+  // ---------------------------------------------------------------------
+
+  function select(lat, lon) {
+    selected = { lat: lat, lon: lon, text: formatCoords(lat, lon) };
+    selectedMarker.setLatLng([lat, lon]).addTo(map);
+    $("coords").value = selected.text;
+    setError("coords-error", "");
+    setError("set-error", "");
+    if (state) {
+      renderFixed();
+    }
+  }
+
+  function clearSelected() {
+    selected = null;
+    selectedMarker.remove();
+  }
+
+  async function loadFavorites() {
+    if (favoritesLoading) {
+      return;
+    }
+    favoritesLoading = true;
+    try {
+      const data = await api("/api/favorites");
+      favorites = data.favorites;
+      favoritesVersion = data.state.favorites_version;
+      renderFavorites();
+    } catch (error) {
+      // poll() probeert het vanzelf opnieuw
+    } finally {
+      favoritesLoading = false;
+    }
+  }
+
+  function placeButton(name, lat, lon) {
+    const button = el("button", "pick");
+    button.type = "button";
+    button.append(el("span", "pick-name", name));
+    button.append(el("span", "pick-sub", formatCoords(lat, lon)));
+    button.addEventListener("click", () => pick(lat, lon, true));
+    return button;
+  }
+
+  function renderFavorites() {
+    const list = $("favorites");
+    list.replaceChildren();
+    for (const favorite of favorites) {
+      const item = el("li");
+      item.append(placeButton(favorite.name, favorite.lat, favorite.lon));
+      const remove = el("button", "icon-btn", "×");
+      remove.type = "button";
+      remove.setAttribute("aria-label", "Favoriet " + favorite.name + " verwijderen");
+      remove.addEventListener("click", () => removeFavorite(favorite));
+      item.append(remove);
+      list.append(item);
+    }
+    $("favorites-count").textContent = String(favorites.length);
+    $("favorites-empty").hidden = favorites.length > 0;
+  }
+
+  function openSave(point) {
+    saveTarget = point;
+    $("save-coords").textContent = point.text;
+    $("save-name").value = "";
+    setError("save-error", "");
+    show($("save-form"));
+    $("favorites-box").open = true;
+    $("save-name").focus();
+  }
+
+  function closeSave() {
+    saveTarget = null;
+    hide($("save-form"));
+  }
+
+  async function saveFavorite(event) {
+    event.preventDefault();
+    if (!saveTarget) {
+      return;
+    }
+    try {
+      const data = await api("/api/favorites", {
+        name: $("save-name").value,
+        lat: saveTarget.lat,
+        lon: saveTarget.lon,
+      });
+      favorites = data.favorites;
+      favoritesVersion = data.state.favorites_version;
+      renderFavorites();
+      closeSave();
+    } catch (error) {
+      setError("save-error", error.message);
+    }
+  }
+
+  async function removeFavorite(favorite) {
+    if (!window.confirm('Favoriet "' + favorite.name + '" verwijderen?')) {
+      return;
+    }
+    try {
+      const data = await api("/api/favorites/" + encodeURIComponent(favorite.id), undefined, "DELETE");
+      favorites = data.favorites;
+      favoritesVersion = data.state.favorites_version;
+      renderFavorites();
+    } catch (error) {
+      // de lijst blijft zoals hij was
+    }
+  }
+
+  // Zoeken gebeurt ALLEEN als je op de knop klikt of op Enter drukt, nooit
+  // terwijl je typt. Dat is een regel van de zoekdienst.
+  async function searchAddress(event) {
+    event.preventDefault();
+    const query = $("search").value.trim();
+    if (!query) {
+      return;
+    }
+    const button = $("search-button");
+    button.disabled = true;
+    button.textContent = "Zoeken…";
+    setError("search-error", "");
+    try {
+      const data = await api("/api/search", { q: query });
+      const list = $("search-results");
+      list.replaceChildren();
+      for (const place of data.places) {
+        const item = el("li");
+        item.append(placeButton(place.name, place.lat, place.lon));
+        list.append(item);
+      }
+      list.hidden = data.places.length === 0;
+      $("search-credit").hidden = data.places.length === 0;
+      if (data.places.length === 0) {
+        setError("search-error", "Niets gevonden. Probeer een andere schrijfwijze, of voeg de plaatsnaam toe.");
+      }
+    } catch (error) {
+      setError("search-error", error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Zoek";
+    }
+  }
+
+  async function changeSearchSetting() {
+    settingBusy = true;
+    try {
+      await api("/api/settings", { address_search: $("setting-search").checked });
+    } catch (error) {
+      // de schakelaar springt bij de volgende verversing terug naar de echte stand
+    } finally {
+      settingBusy = false;
+      if (state) {
+        renderSearch();
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // 6. Route
+  // ---------------------------------------------------------------------
+
+  function routeMode() {
+    return $("road").checked ? transport : "line";
+  }
+
+  // Alles wat de route bepaalt, als één tekst. Verandert die, dan moet de
+  // route opnieuw uitgerekend worden.
+  function routeKey() {
+    return JSON.stringify([waypoints, routeMode(), $("round-trip").checked, $("repeat").checked]);
+  }
+
+  function addWaypoint(lat, lon) {
+    if (waypoints.length >= MAX_WAYPOINTS) {
+      planError = "Een route mag hooguit " + MAX_WAYPOINTS + " punten hebben.";
+      renderRoute();
+      return;
+    }
+    waypoints.push({ lat: lat, lon: lon });
+    routeChanged();
+  }
+
+  function routeChanged() {
+    plan = null;
+    planError = "";
+    $("route-error").dataset.kind = "";
+    drawRouteBuilder();
+    clearTimeout(planTimer);
+    if (waypoints.length >= 2) {
+      // Een rechte lijn rekent Ghost zelf uit. Voor een route over de weg
+      // wachten we even, zodat snel achter elkaar klikken niet steeds een
+      // nieuwe vraag aan de routeserver stuurt.
+      planTimer = setTimeout(computePlan, routeMode() === "line" ? 50 : 700);
+    }
+    if (state) {
+      renderRoute();
+    }
+  }
+
+  async function computePlan() {
+    if (planBusy) {
+      planTimer = setTimeout(computePlan, 300);
+      return;
+    }
+    const key = routeKey();
+    planBusy = true;
+    renderRoute();
+    try {
+      const data = await api("/api/route/plan", {
+        waypoints: waypoints.map((point) => [point.lat, point.lon]),
+        mode: routeMode(),
+        round_trip: $("round-trip").checked,
+        repeat: $("repeat").checked,
+      });
+      if (key === routeKey()) {
+        plan = data.plan;
+        plan.key = key;
+        planError = "";
+      }
+    } catch (error) {
+      if (key === routeKey()) {
+        plan = null;
+        planError = error.message;
+      }
+    } finally {
+      planBusy = false;
+      drawRouteBuilder();
+      renderRoute();
+    }
+  }
+
+  // Teken de punten en de lijn van de route die je aan het maken bent.
+  function drawRouteBuilder() {
+    waypointLayer.clearLayers();
+    waypoints.forEach((point, index) => {
+      const marker = L.marker([point.lat, point.lon], {
+        icon: pin("waypoint", 26, index + 1),
+        draggable: true,
+        keyboard: false,
+        title: "Punt " + (index + 1) + " (sleep om te verplaatsen)",
+      });
+      marker.on("dragend", () => {
+        const moved = marker.getLatLng().wrap();
+        waypoints[index] = { lat: moved.lat, lon: moved.lng };
+        routeChanged();
+      });
+      waypointLayer.addLayer(marker);
+    });
+    if (plan) {
+      planLine.setLatLngs(plan.path);
+      draftLine.setLatLngs([]);
+    } else {
+      planLine.setLatLngs([]);
+      draftLine.setLatLngs(waypoints.map((point) => [point.lat, point.lon]));
+    }
+  }
+
+  function applyTab() {
+    const route = tab === "route";
+    $("tab-fixed").setAttribute("aria-selected", String(!route));
+    $("tab-route").setAttribute("aria-selected", String(route));
+    $("panel-fixed").hidden = route;
+    $("panel-route").hidden = !route;
+    $("coords-button").textContent = route ? "Voeg toe" : "Toon op kaart";
+    $("tab-help").textContent = route
+      ? "Klik op de kaart om punten toe te voegen. Je nep-locatie beweegt van punt 1 naar het laatste punt. Punten kun je verslepen."
+      : "Klik op de kaart om een plek te kiezen. Je iPhone staat dan op die ene plek.";
+    // Op de kaart alleen laten zien wat bij dit tabblad hoort.
+    if (route) {
+      selectedMarker.remove();
+      waypointLayer.addTo(map);
+      draftLine.addTo(map);
+      planLine.addTo(map);
+    } else {
+      waypointLayer.remove();
+      draftLine.remove();
+      planLine.remove();
+      if (selected) {
+        selectedMarker.addTo(map);
+      }
+    }
+  }
+
+  async function startRoute() {
+    if (!plan || routeBusy) {
+      return;
+    }
+    routeBusy = true;
+    $("route-error").dataset.kind = "";
+    setError("route-error", "");
+    renderRoute();
+    try {
+      await api("/api/route/start", {
+        plan_id: plan.id,
+        speed_kmh: Number($("speed").value),
+        minutes: Number($("route-minutes").value),
+      });
+    } catch (error) {
+      $("route-error").dataset.kind = "start";
+      setError("route-error", error.message);
+      if (error.message.indexOf("verlopen") !== -1) {
+        routeChanged(); // reken de route opnieuw uit
+      }
+    } finally {
+      routeBusy = false;
+      renderRoute();
+    }
+  }
+
+  async function toggleRoutePause() {
+    const route = state && state.simulation.route;
+    if (!route) {
+      return;
+    }
+    try {
+      await api(route.paused ? "/api/route/resume" : "/api/route/pause", {});
+    } catch (error) {
+      // de knop laat bij de volgende verversing de echte stand zien
+    }
+  }
+
+  async function changeLiveSpeed() {
+    try {
+      await api("/api/route/speed", { speed_kmh: Number($("live-speed").value) });
+    } catch (error) {
+      // idem
+    } finally {
+      speedDragging = false;
+    }
+  }
+
+  async function nudge(direction) {
+    setError("nudge-error", "");
+    try {
+      await api("/api/nudge", { direction: direction, meters: Number($("nudge-step").value) });
+    } catch (error) {
+      setError("nudge-error", error.message);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // 7. Het venster "geen contact"
   // ---------------------------------------------------------------------
 
   function showOverlay(title, text, warning, foot) {
@@ -482,7 +1092,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // Jouw klikken
+  // 8. Jouw klikken
   // ---------------------------------------------------------------------
 
   async function stop() {
@@ -495,8 +1105,6 @@
     }
     try {
       await api("/api/stop", {});
-      selectedMarker.remove();
-      selected = null;
     } catch (error) {
       if (error.status === 0) {
         showOffline();
@@ -515,22 +1123,20 @@
       return;
     }
     setBusy = true;
-    hide($("set-error"));
-    renderLocation();
+    setError("set-error", "");
+    renderFixed();
     try {
       await api("/api/location", {
         lat: selected.lat,
         lon: selected.lon,
         minutes: Number($("minutes").value),
       });
-      selectedMarker.remove();
-      selected = null;
+      clearSelected();
     } catch (error) {
-      $("set-error").textContent = error.message;
-      show($("set-error"));
+      setError("set-error", error.message);
     } finally {
       setBusy = false;
-      renderLocation();
+      renderFixed();
     }
   }
 
@@ -542,10 +1148,13 @@
     }
     try {
       const point = await api("/api/parse", { text: text });
-      select(point.lat, point.lon, true);
+      setError("coords-error", "");
+      pick(point.lat, point.lon, true);
+      if (tab === "route") {
+        $("coords").value = "";
+      }
     } catch (error) {
-      $("coords-error").textContent = error.message;
-      show($("coords-error"));
+      setError("coords-error", error.message);
     }
   }
 
@@ -573,6 +1182,19 @@
     } catch (error) {
       // niets: de timer in beeld blijft kloppen met Ghost
     }
+  }
+
+  async function copyActive() {
+    const button = $("active-copy");
+    try {
+      await navigator.clipboard.writeText(state.simulation.text);
+      button.textContent = "Gekopieerd";
+    } catch (error) {
+      button.textContent = "Kopiëren lukt niet";
+    }
+    setTimeout(() => {
+      button.textContent = "Kopieer coördinaten";
+    }, 1600);
   }
 
   async function quit() {
@@ -614,6 +1236,7 @@
     );
   }
 
+  // --- knoppen: stoppen, vaste plek, status ---
   $("stop").addEventListener("click", stop);
   $("set").addEventListener("click", setLocation);
   $("coords-form").addEventListener("submit", showCoords);
@@ -626,6 +1249,87 @@
       renderNotice();
     }
   });
+
+  // --- knoppen: het actief-blok ---
+  $("active-copy").addEventListener("click", copyActive);
+  $("active-show").addEventListener("click", () => {
+    map.setView([state.simulation.lat, state.simulation.lon], Math.max(map.getZoom(), 15));
+  });
+  $("active-save").addEventListener("click", () => {
+    const sim = state.simulation;
+    openSave({ lat: sim.lat, lon: sim.lon, text: sim.text });
+  });
+  for (const button of document.querySelectorAll(".pad-btn")) {
+    button.addEventListener("click", () => nudge(button.dataset.direction));
+  }
+  $("route-pause").addEventListener("click", toggleRoutePause);
+  $("live-speed").addEventListener("input", () => {
+    speedDragging = true;
+    $("live-speed-out").textContent = $("live-speed").value + " km/u";
+  });
+  $("live-speed").addEventListener("change", changeLiveSpeed);
+
+  // --- knoppen: favorieten, zoeken, instellingen ---
+  $("selected-save").addEventListener("click", () => {
+    if (selected) {
+      openSave(selected);
+    }
+  });
+  $("save-form").addEventListener("submit", saveFavorite);
+  $("save-cancel").addEventListener("click", closeSave);
+  $("search-form").addEventListener("submit", searchAddress);
+  $("setting-search").addEventListener("change", changeSearchSetting);
+  $("search-enable").addEventListener("click", () => {
+    const box = $("settings-box");
+    box.open = true;
+    box.scrollIntoView({ behavior: "smooth", block: "center" });
+    $("setting-search").focus();
+  });
+
+  // --- knoppen: tabbladen en route ---
+  $("tab-fixed").addEventListener("click", () => {
+    tab = "fixed";
+    applyTab();
+  });
+  $("tab-route").addEventListener("click", () => {
+    tab = "route";
+    applyTab();
+  });
+  $("wp-undo").addEventListener("click", () => {
+    waypoints.pop();
+    routeChanged();
+  });
+  $("wp-clear").addEventListener("click", () => {
+    waypoints = [];
+    routeChanged();
+  });
+  for (const button of document.querySelectorAll(".seg")) {
+    button.addEventListener("click", () => {
+      transport = button.dataset.transport;
+      for (const other of document.querySelectorAll(".seg")) {
+        other.setAttribute("aria-checked", String(other === button));
+      }
+      // Bij ander vervoer hoort een andere gewone snelheid (lopen 5, fietsen 15, auto 40).
+      const presets = state ? state.speeds.presets : { lopen: 5, fietsen: 15, auto: 40 };
+      const names = { foot: "lopen", bike: "fietsen", car: "auto" };
+      $("speed").value = String(presets[names[transport]]);
+      routeChanged();
+    });
+  }
+  $("speed").addEventListener("input", () => {
+    if (state) {
+      renderRoute();
+    }
+  });
+  for (const id of ["road", "round-trip", "repeat"]) {
+    $(id).addEventListener("change", routeChanged);
+  }
+  $("route-minutes").addEventListener("change", () => {
+    if (state) {
+      renderRoute();
+    }
+  });
+  $("route-start").addEventListener("click", startRoute);
 
   // Esc doet hetzelfde als de rode knop. Altijd.
   document.addEventListener("keydown", (event) => {
@@ -643,6 +1347,7 @@
     }
   });
 
+  applyTab();
   poll();
   pollTimer = setInterval(poll, POLL_MS);
 })();

@@ -216,3 +216,41 @@ def test_snelheid_over_een_kilometer_klopt():
     positie = route.position_at(afgelegd)
     assert haversine_m(DAM, positie.point) == pytest.approx(1000, abs=0.01)
     assert eta_seconds(positie.remaining_m, 5) == pytest.approx((route.length_m - 1000) / (5 / 3.6))
+
+
+# --- een stukje verschuiven ------------------------------------------------
+
+
+def test_verschuiven_naar_het_noorden_verandert_alleen_de_breedtegraad():
+    from ghost.geo import destination_point
+
+    start = LatLon(52.0, 5.0)
+    nieuw = destination_point(start, 0, 1000)
+    assert nieuw.lat > start.lat
+    assert nieuw.lon == pytest.approx(start.lon, abs=1e-9)
+    assert haversine_m(start, nieuw) == pytest.approx(1000, abs=0.01)
+
+
+@pytest.mark.parametrize("richting", [0, 45, 90, 135, 180, 225, 270, 315])
+@pytest.mark.parametrize("afstand", [1, 10, 250, 1000])
+def test_verschuiven_legt_precies_de_gevraagde_afstand_af(richting, afstand):
+    from ghost.geo import destination_point
+
+    start = LatLon(48.8584, 2.2945)
+    assert haversine_m(start, destination_point(start, richting, afstand)) == pytest.approx(afstand, abs=0.01)
+
+
+def test_verschuiven_over_de_datumgrens_blijft_een_geldige_lengtegraad():
+    from ghost.geo import destination_point
+
+    nieuw = destination_point(LatLon(0.0, 179.9999), 90, 1000)
+    assert -180 <= nieuw.lon <= 180
+    assert nieuw.lon < 0  # aan de andere kant van de datumgrens
+
+
+def test_lengte_van_een_lijn():
+    from ghost.geo import path_length_m
+
+    a, b, c = LatLon(52.0, 5.0), LatLon(52.01, 5.0), LatLon(52.01, 5.01)
+    assert path_length_m([a]) == 0
+    assert path_length_m([a, b, c]) == pytest.approx(haversine_m(a, b) + haversine_m(b, c))

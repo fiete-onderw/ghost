@@ -39,3 +39,13 @@ def active_marker() -> Path:
     mogelijk nog op de nep-locatie staat.
     """
     return data_dir() / "nep-locatie-actief.txt"
+
+
+def favorites_file() -> Path:
+    """Je bewaarde plekken. Alleen op je eigen laptop, nooit in de repo."""
+    return data_dir() / "favorieten.json"
+
+
+def settings_file() -> Path:
+    """Je instellingen, bijvoorbeeld of adres zoeken aan staat."""
+    return data_dir() / "instellingen.json"

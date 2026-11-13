@@ -80,6 +80,7 @@ class SafetyManager:
         self._marker = marker
         self._clock = clock
         self._lock = asyncio.Lock()  # nooit tegelijk zetten en terugvragen
+        self._marker_written = self._marker_exists()
 
         #: De nep-locatie die volgens Ghost nu actief is, of None.
         self.point: LatLon | None = None
@@ -223,7 +224,8 @@ class SafetyManager:
             return False
 
     def _write_marker(self) -> None:
-        if self._marker is None:
+        # Bij een route wordt elke seconde een punt gezet; één keer schrijven is genoeg.
+        if self._marker is None or self._marker_written:
             return
         try:
             self._marker.parent.mkdir(parents=True, exist_ok=True)
@@ -233,12 +235,14 @@ class SafetyManager:
                 f"Gezet op: {time.strftime('%Y-%m-%d %H:%M:%S')}\n",
                 encoding="utf-8",
             )
+            self._marker_written = True
         except OSError:
             log.warning("Merkbestand schrijven mislukt", exc_info=True)
 
     def _remove_marker(self) -> None:
         if self._marker is None:
             return
+        self._marker_written = False
         try:
             self._marker.unlink(missing_ok=True)
         except OSError:

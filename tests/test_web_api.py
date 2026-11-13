@@ -14,19 +14,58 @@ from ghost.controller import Controller
 from ghost.device.base import Problem
 from ghost.device.fake import FakeDevice
 from ghost.geo import LatLon
+from ghost.osm import OsmError, Place, RoadRoute
 from ghost.safety import SafetyManager
+from ghost.store import Favorites, Settings
 from ghost.web.app import STATIC_DIR, create_app
 
 TOKEN = "test-token-0123456789"
 BASIS = "http://127.0.0.1:8765"
 
 
+class NepRouteserver:
+    """Doet alsof hij de routeserver is, zodat de tests niets naar internet sturen."""
+
+    def __init__(self):
+        self.vragen = []
+
+    async def route(self, waypoints, profile):
+        self.vragen.append(profile)
+        return RoadRoute(list(waypoints), 0.0)
+
+
+class NepZoekdienst:
+    def __init__(self):
+        self.vragen = []
+        self.fout = None
+
+    async def search(self, query):
+        self.vragen.append(query)
+        if self.fout:
+            raise OsmError(self.fout)
+        return [Place("Dam, Amsterdam, Nederland", 52.3731, 4.8926)]
+
+
 class Opstelling:
     def __init__(self, toestel=None, **client_opties):
         self.toestel = toestel or FakeDevice()
-        self.controller = Controller(SafetyManager(self.toestel), log_path=paths.log_file())
+        self.routeserver = NepRouteserver()
+        self.zoekdienst = NepZoekdienst()
+        self.controller = Controller(
+            SafetyManager(self.toestel), log_path=paths.log_file(), routing=self.routeserver
+        )
         self.gestopt = []
-        self.app = create_app(self.controller, token=TOKEN, port=8765, on_quit=lambda: self.gestopt.append(True))
+        self.favorieten = Favorites(paths.favorites_file())
+        self.instellingen = Settings(paths.settings_file())
+        self.app = create_app(
+            self.controller,
+            token=TOKEN,
+            port=8765,
+            on_quit=lambda: self.gestopt.append(True),
+            favorites=self.favorieten,
+            settings=self.instellingen,
+            search=self.zoekdienst,
+        )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app, **client_opties),
             base_url=BASIS,
@@ -158,9 +197,18 @@ async def test_bestandstypen_kloppen_ook_als_windows_er_iets_anders_van_vindt(mo
 def test_de_pagina_laadt_niets_van_andere_websites_en_heeft_geen_inline_code():
     """Past bij de strenge regels (CSP): alleen eigen bestanden, geen code of stijl in de HTML zelf."""
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    for verwijzing in re.findall(r'(?:src|href)="([^"]+)"', html):
+    # Alles wat de browser vanzelf inlaadt (scripts, stijlen, plaatjes) moet van Ghost zelf komen.
+    geladen = re.findall(r'<(?:script|img|iframe)\b[^>]*\bsrc="([^"]+)"', html)
+    geladen += re.findall(r'<link\b[^>]*\bhref="([^"]+)"', html)
+    assert len(geladen) >= 4
+    for verwijzing in geladen:
         assert verwijzing.startswith("/static/"), verwijzing
         assert (STATIC_DIR / verwijzing.removeprefix("/static/")).is_file(), verwijzing
+    # Gewone links naar buiten mogen, maar alleen als je er zelf op klikt, in een
+    # nieuw tabblad, en zonder dat de andere website iets over deze pagina te weten komt.
+    for link in re.findall(r"<a\b[^>]*>", html):
+        assert 'href="https://' in link, link
+        assert 'target="_blank"' in link and 'rel="noopener noreferrer"' in link, link
     assert not re.search(r"<script(?![^>]*\bsrc=)", html)
     assert "<style" not in html
     assert not re.search(r'\sstyle="', html)
@@ -331,3 +379,141 @@ async def test_log_bevat_alleen_afgeronde_coordinaten(ghost):
     log = paths.log_file().read_text(encoding="utf-8")
     assert "48.86, 2.29" in log
     assert "48.8584" not in log and "2.2945" not in log
+
+
+# --- routes ---------------------------------------------------------------
+
+LIJN = {"waypoints": [[52.0, 5.0], [52.002, 5.0]], "mode": "line"}
+
+
+async def test_route_plannen_starten_pauzeren_en_stoppen(ghost):
+    antwoord = await ghost.client.post("/api/route/plan", json=LIJN)
+    assert antwoord.status_code == 200
+    plan = antwoord.json()["plan"]
+    assert plan["path"] == [[52.0, 5.0], [52.002, 5.0]]
+    assert 200 < plan["length_m"] < 250
+    assert ghost.toestel.location is None  # plannen zet nog niets
+
+    antwoord = await ghost.client.post("/api/route/start", json={"plan_id": plan["id"], "speed_kmh": 5, "minutes": 15})
+    assert antwoord.status_code == 200
+    beeld = antwoord.json()["state"]["simulation"]
+    assert beeld["active"] is True and beeld["route"]["speed_kmh"] == 5
+    assert ghost.toestel.location == LatLon(52.0, 5.0)
+
+    assert (await ghost.client.get("/api/route/path")).json()["path"] == plan["path"]
+    assert (await ghost.client.post("/api/route/pause")).json()["state"]["simulation"]["route"]["paused"] is True
+    assert (await ghost.client.post("/api/route/resume")).json()["state"]["simulation"]["route"]["paused"] is False
+    snel = await ghost.client.post("/api/route/speed", json={"speed_kmh": 15})
+    assert snel.json()["state"]["simulation"]["route"]["speed_kmh"] == 15
+
+    gestopt = await ghost.client.post("/api/stop")
+    assert gestopt.json()["state"]["simulation"]["route"] is None
+    assert ghost.toestel.location is None
+    assert (await ghost.client.post("/api/route/pause")).status_code == 409
+    assert (await ghost.client.get("/api/route/path")).status_code == 409
+
+
+async def test_route_over_de_weg_gebruikt_de_routeserver_met_het_gekozen_vervoer(ghost):
+    antwoord = await ghost.client.post("/api/route/plan", json={**LIJN, "mode": "bike", "round_trip": True})
+    assert antwoord.status_code == 200
+    assert ghost.routeserver.vragen == ["bike"]
+    assert len(antwoord.json()["plan"]["path"]) == 3  # heen en weer terug
+
+
+@pytest.mark.parametrize(
+    "inhoud",
+    [
+        {"waypoints": [[52.0, 5.0]], "mode": "line"},
+        {"waypoints": [[95.0, 5.0], [52.0, 5.0]], "mode": "line"},
+        {"waypoints": [[52.0, 5.0], [52.002, 5.0]], "mode": "vliegen"},
+        {"waypoints": [[52.0, 5.0 + i / 1000] for i in range(26)], "mode": "line"},
+        {"waypoints": "geen lijst", "mode": "line"},
+        {"mode": "line"},
+    ],
+)
+async def test_onmogelijke_route_wordt_netjes_geweigerd(ghost, inhoud):
+    antwoord = await ghost.client.post("/api/route/plan", json=inhoud)
+    assert antwoord.status_code in (400, 409)
+    assert antwoord.json()["error"]
+
+
+@pytest.mark.parametrize("inhoud", [{"plan_id": 12345, "speed_kmh": 5}, {"plan_id": 1, "speed_kmh": 500}, {"speed_kmh": 5}])
+async def test_route_start_niet_met_onzin(ghost, inhoud):
+    await ghost.client.post("/api/route/plan", json=LIJN)
+    antwoord = await ghost.client.post("/api/route/start", json=inhoud)
+    assert antwoord.status_code in (400, 409)
+    assert ghost.toestel.location is None
+
+
+async def test_verschuiven_via_de_api(ghost):
+    await ghost.client.post("/api/location", json={"lat": 52.0, "lon": 5.0})
+    antwoord = await ghost.client.post("/api/nudge", json={"direction": "n", "meters": 100})
+    assert antwoord.status_code == 200
+    assert antwoord.json()["state"]["simulation"]["lat"] > 52.0
+    assert (await ghost.client.post("/api/nudge", json={"direction": "x", "meters": 100})).status_code == 409
+    assert (await ghost.client.post("/api/nudge", json={"direction": "n", "meters": 99999})).status_code == 409
+
+
+# --- favorieten -----------------------------------------------------------
+
+
+async def test_favorieten_bewaren_ophalen_en_verwijderen(ghost):
+    assert (await ghost.client.get("/api/favorites")).json()["favorites"] == []
+    antwoord = await ghost.client.post("/api/favorites", json={"name": "Eiffeltoren", "lat": 48.8584, "lon": 2.2945})
+    assert antwoord.status_code == 200
+    lijst = antwoord.json()["favorites"]
+    assert [(f["name"], f["lat"], f["lon"]) for f in lijst] == [("Eiffeltoren", 48.8584, 2.2945)]
+    assert antwoord.json()["state"]["favorites_version"] == 1
+    assert Favorites(paths.favorites_file()).list() == lijst  # het staat echt op schijf
+
+    weg = await ghost.client.delete(f"/api/favorites/{lijst[0]['id']}")
+    assert weg.json()["favorites"] == []
+    assert weg.json()["state"]["favorites_version"] == 2
+
+
+@pytest.mark.parametrize(
+    "inhoud", [{"name": "", "lat": 1, "lon": 2}, {"name": "X", "lat": 95, "lon": 2}, {"name": "X"}, {"name": "x" * 500, "lat": 1, "lon": 2}]
+)
+async def test_onbruikbare_favoriet_wordt_geweigerd(ghost, inhoud):
+    antwoord = await ghost.client.post("/api/favorites", json=inhoud)
+    assert antwoord.status_code == 400
+    assert ghost.favorieten.list() == []
+
+
+async def test_favorieten_hebben_ook_het_token_nodig(ghost):
+    kop = {"X-Ghost-Token": "fout"}
+    assert (await ghost.client.get("/api/favorites", headers=kop)).status_code == 401
+    assert (await ghost.client.post("/api/favorites", json={"name": "X", "lat": 1, "lon": 2}, headers=kop)).status_code == 401
+
+
+# --- adres zoeken ---------------------------------------------------------
+
+
+async def test_adres_zoeken_staat_standaard_uit_en_stuurt_dan_niets_naar_internet(ghost):
+    assert (await ghost.client.get("/api/state")).json()["state"]["settings"] == {"address_search": False}
+    antwoord = await ghost.client.post("/api/search", json={"q": "Dam Amsterdam"})
+    assert antwoord.status_code == 409
+    assert "staat uit" in antwoord.json()["error"]
+    assert ghost.zoekdienst.vragen == []
+
+
+async def test_adres_zoeken_werkt_pas_na_bewust_aanzetten(ghost):
+    aan = await ghost.client.post("/api/settings", json={"address_search": True})
+    assert aan.json()["state"]["settings"]["address_search"] is True
+    assert Settings(paths.settings_file()).address_search is True  # de keuze wordt onthouden
+
+    antwoord = await ghost.client.post("/api/search", json={"q": "Dam Amsterdam"})
+    assert antwoord.json()["places"] == [{"name": "Dam, Amsterdam, Nederland", "lat": 52.3731, "lon": 4.8926}]
+    assert ghost.zoekdienst.vragen == ["Dam Amsterdam"]
+
+    await ghost.client.post("/api/settings", json={"address_search": False})
+    assert (await ghost.client.post("/api/search", json={"q": "Dam"})).status_code == 409
+    assert ghost.zoekdienst.vragen == ["Dam Amsterdam"]
+
+
+async def test_fout_van_de_zoekdienst_wordt_gewone_taal(ghost):
+    await ghost.client.post("/api/settings", json={"address_search": True})
+    ghost.zoekdienst.fout = "De zoekdienst is niet bereikbaar. Controleer je internet."
+    antwoord = await ghost.client.post("/api/search", json={"q": "Dam"})
+    assert antwoord.status_code == 502
+    assert "niet bereikbaar" in antwoord.json()["error"]

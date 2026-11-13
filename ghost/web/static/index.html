@@ -41,12 +41,13 @@
       <div id="notice" class="notice" role="status" hidden>
         <div class="notice-head">
           <strong id="notice-title"></strong>
-          <button id="notice-close" class="notice-close" type="button" aria-label="Melding sluiten">&times;</button>
+          <button id="notice-close" class="icon-btn" type="button" aria-label="Melding sluiten">&times;</button>
         </div>
         <p id="notice-text"></p>
         <p id="notice-hint" class="notice-hint"></p>
       </div>
 
+      <!-- ===================== 1. Je iPhone ===================== -->
       <section class="card" aria-labelledby="device-heading">
         <div class="card-head">
           <h2 id="device-heading">1. Je iPhone</h2>
@@ -55,37 +56,214 @@
         <div id="device"></div>
       </section>
 
-      <section class="card" aria-labelledby="location-heading">
-        <h2 id="location-heading">2. Kies een plek</h2>
+      <!-- ===================== 2. Wat wil je doen? ===================== -->
+      <section class="card" aria-labelledby="do-heading">
+        <h2 id="do-heading">2. Wat wil je doen?</h2>
 
+        <!-- Zichtbaar zolang er een nep-locatie actief is. -->
         <div id="active-box" class="active-box" hidden>
-          <p class="active-line">Nep-locatie actief op <strong id="active-coords"></strong></p>
+          <p class="active-line"><span id="active-title">Nep-locatie actief op</span> <strong id="active-coords"></strong></p>
+
+          <div id="route-live" class="route-live" hidden>
+            <div class="progress" role="progressbar" aria-label="Voortgang van de route" aria-valuemin="0" aria-valuemax="100">
+              <div id="route-bar" class="progress-bar"></div>
+            </div>
+            <p id="route-progress" class="active-line"></p>
+            <div class="row">
+              <button id="route-pause" class="btn btn-small" type="button">Pauze</button>
+              <label class="row grow" for="live-speed">
+                <span>Snelheid</span>
+                <input id="live-speed" type="range" min="1" max="120" step="1">
+                <output id="live-speed-out" for="live-speed"></output>
+              </label>
+            </div>
+          </div>
+
           <p class="active-line">
             Stopt vanzelf over <strong id="active-remaining"></strong>
             <button id="extend" class="btn btn-small" type="button">+15 min</button>
           </p>
-          <p class="muted">Klik op een andere plek op de kaart om de nep-locatie te verplaatsen.</p>
+
+          <div id="nudge-box" class="nudge-box">
+            <div class="pad" role="group" aria-label="Nep-locatie verschuiven">
+              <button class="btn pad-btn" type="button" data-direction="nw" aria-label="Naar het noordwesten">&#8598;</button>
+              <button class="btn pad-btn" type="button" data-direction="n" aria-label="Naar het noorden">&#8593;</button>
+              <button class="btn pad-btn" type="button" data-direction="ne" aria-label="Naar het noordoosten">&#8599;</button>
+              <button class="btn pad-btn" type="button" data-direction="w" aria-label="Naar het westen">&#8592;</button>
+              <span class="pad-middle" aria-hidden="true"></span>
+              <button class="btn pad-btn" type="button" data-direction="e" aria-label="Naar het oosten">&#8594;</button>
+              <button class="btn pad-btn" type="button" data-direction="sw" aria-label="Naar het zuidwesten">&#8601;</button>
+              <button class="btn pad-btn" type="button" data-direction="s" aria-label="Naar het zuiden">&#8595;</button>
+              <button class="btn pad-btn" type="button" data-direction="se" aria-label="Naar het zuidoosten">&#8600;</button>
+            </div>
+            <div class="nudge-side">
+              <strong>Verschuif</strong>
+              <label class="row" for="nudge-step">
+                <span>per klik</span>
+                <select id="nudge-step">
+                  <option value="10">10 meter</option>
+                  <option value="50" selected>50 meter</option>
+                  <option value="100">100 meter</option>
+                  <option value="500">500 meter</option>
+                </select>
+              </label>
+              <p id="nudge-error" class="field-error" hidden></p>
+            </div>
+          </div>
+
+          <div class="row wrap">
+            <button id="active-show" class="btn btn-small" type="button">Toon op kaart</button>
+            <button id="active-copy" class="btn btn-small" type="button">Kopieer co&ouml;rdinaten</button>
+            <button id="active-save" class="btn btn-small" type="button">&#9734; Bewaar</button>
+          </div>
         </div>
 
-        <p class="muted">Klik op de kaart, of plak co&ouml;rdinaten (breedtegraad, lengtegraad):</p>
+        <!-- De twee manieren -->
+        <div class="tabs" role="tablist" aria-label="Soort nep-locatie">
+          <button id="tab-fixed" class="tab" type="button" role="tab" aria-selected="true" aria-controls="panel-fixed">Vaste plek</button>
+          <button id="tab-route" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-route">Route</button>
+        </div>
+        <p id="tab-help" class="muted"></p>
+
+        <!-- Een plek aanwijzen: zoeken, coördinaten of favorieten. Geldt voor beide tabbladen. -->
+        <form id="search-form" class="row" autocomplete="off" hidden>
+          <input id="search" type="text" maxlength="200" placeholder="Zoek een adres of plaats" aria-label="Adres of plaats">
+          <button class="btn btn-small" type="submit" id="search-button">Zoek</button>
+        </form>
+        <ul id="search-results" class="pick-list" hidden></ul>
+        <p id="search-error" class="field-error" hidden></p>
+        <p id="search-credit" class="muted small" hidden>Zoekresultaten: &copy; OpenStreetMap-bijdragers, via Nominatim.</p>
+        <p id="search-off" class="muted small">
+          Adres zoeken staat uit. <button id="search-enable" class="link-btn" type="button">Hoe zet ik het aan?</button>
+        </p>
+
         <form id="coords-form" class="row" autocomplete="off">
           <input id="coords" type="text" inputmode="text" spellcheck="false" maxlength="200"
-                 placeholder="52.3676, 4.9041" aria-label="Co&ouml;rdinaten">
-          <button class="btn btn-small" type="submit">Toon op kaart</button>
+                 placeholder="Of plak co&ouml;rdinaten: 52.3676, 4.9041" aria-label="Co&ouml;rdinaten">
+          <button class="btn btn-small" type="submit" id="coords-button">Toon op kaart</button>
         </form>
         <p id="coords-error" class="field-error" hidden></p>
 
-        <p id="selected-line" class="selected-line">Nog geen plek gekozen.</p>
+        <details id="favorites-box" class="sub">
+          <summary>Favorieten (<span id="favorites-count">0</span>)</summary>
+          <form id="save-form" class="save-form" autocomplete="off" hidden>
+            <p class="small">Bewaar <strong id="save-coords"></strong> als:</p>
+            <div class="row">
+              <input id="save-name" type="text" maxlength="60" placeholder="Naam, bijvoorbeeld Thuis" aria-label="Naam van de plek">
+              <button class="btn btn-small" type="submit">Bewaar</button>
+              <button id="save-cancel" class="btn btn-small" type="button">Annuleer</button>
+            </div>
+            <p id="save-error" class="field-error" hidden></p>
+          </form>
+          <ul id="favorites" class="pick-list"></ul>
+          <p id="favorites-empty" class="muted small">Nog geen favorieten. Kies een plek en klik op &ldquo;&#9734; Bewaar&rdquo;.</p>
+        </details>
 
-        <label class="row row-label" for="minutes">
-          <span>Stop vanzelf na</span>
-          <select id="minutes"></select>
-        </label>
+        <!-- Tabblad: vaste plek -->
+        <div id="panel-fixed" class="panel" role="tabpanel" aria-labelledby="tab-fixed">
+          <div class="row between">
+            <p id="selected-line" class="selected-line">Nog geen plek gekozen.</p>
+            <button id="selected-save" class="btn btn-small" type="button" hidden>&#9734; Bewaar</button>
+          </div>
+          <label class="row between strong" for="minutes">
+            <span>Stop vanzelf na</span>
+            <select id="minutes"></select>
+          </label>
+          <button id="set" class="btn btn-primary" type="button" disabled>Zet nep-locatie hier</button>
+          <p id="set-hint" class="muted"></p>
+          <p id="set-error" class="field-error" hidden></p>
+        </div>
 
-        <button id="set" class="btn btn-primary" type="button" disabled>Zet nep-locatie hier</button>
-        <p id="set-hint" class="muted"></p>
-        <p id="set-error" class="field-error" hidden></p>
+        <!-- Tabblad: route -->
+        <div id="panel-route" class="panel" role="tabpanel" aria-labelledby="tab-route" hidden>
+          <ol id="waypoints" class="waypoints"></ol>
+          <p id="waypoints-empty" class="muted">Nog geen punten. Klik op de kaart voor het beginpunt, en daarna voor elk volgend punt.</p>
+          <div id="waypoint-buttons" class="row" hidden>
+            <button id="wp-undo" class="btn btn-small" type="button">Laatste punt weg</button>
+            <button id="wp-clear" class="btn btn-small" type="button">Alles wissen</button>
+          </div>
+
+          <div class="field">
+            <span class="strong">Vervoer</span>
+            <div class="segmented" role="radiogroup" aria-label="Vervoer">
+              <button class="seg" type="button" role="radio" aria-checked="true" data-transport="foot">Lopen</button>
+              <button class="seg" type="button" role="radio" aria-checked="false" data-transport="bike">Fietsen</button>
+              <button class="seg" type="button" role="radio" aria-checked="false" data-transport="car">Auto</button>
+            </div>
+          </div>
+
+          <label class="row strong" for="speed">
+            <span>Snelheid</span>
+            <input id="speed" class="grow" type="range" min="1" max="120" step="1" value="5">
+            <output id="speed-out" for="speed">5 km/u</output>
+          </label>
+
+          <label class="check" for="road">
+            <input id="road" type="checkbox" checked>
+            <span>Volg de weg <span class="muted small">(de route wordt opgevraagd bij routing.openstreetmap.de; uit = rechte lijn)</span></span>
+          </label>
+          <label class="check" for="round-trip">
+            <input id="round-trip" type="checkbox">
+            <span>Heen en terug</span>
+          </label>
+          <label class="check" for="repeat">
+            <input id="repeat" type="checkbox">
+            <span>Blijf herhalen tot de timer afloopt</span>
+          </label>
+
+          <label class="row between strong" for="route-minutes">
+            <span>Stop vanzelf na</span>
+            <select id="route-minutes"></select>
+          </label>
+
+          <p id="route-summary" class="route-summary" hidden></p>
+          <p id="route-warning" class="route-warning" hidden></p>
+          <button id="route-start" class="btn btn-primary" type="button" disabled>Start route</button>
+          <p id="route-hint" class="muted"></p>
+          <p id="route-error" class="field-error" hidden></p>
+          <p id="route-credit" class="muted small" hidden>
+            Route: routing.openstreetmap.de (FOSSGIS), &copy; OpenStreetMap-bijdragers.
+            <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener noreferrer">Fout in de kaart melden</a>
+          </p>
+        </div>
       </section>
+
+      <!-- ===================== Instellingen ===================== -->
+      <details id="settings-box" class="card">
+        <summary><h2>Instellingen</h2></summary>
+        <label class="check" for="setting-search">
+          <input id="setting-search" type="checkbox">
+          <span class="strong">Adres zoeken aanzetten</span>
+        </label>
+        <div class="muted small explain">
+          <p>
+            Staat dit aan, dan stuurt Ghost de tekst die je zoekt naar <strong>nominatim.openstreetmap.org</strong>.
+            Dat is een gratis zoekdienst van de OpenStreetMap Foundation, die draait op giften.
+          </p>
+          <p>De regels van die dienst, waar Ghost zich aan houdt:</p>
+          <ul>
+            <li>Er wordt alleen gezocht als je zelf op &ldquo;Zoek&rdquo; klikt. Ghost vult niets aan terwijl je typt.</li>
+            <li>Hooguit &eacute;&eacute;n zoekopdracht per seconde, en geen grote aantallen achter elkaar.</li>
+            <li>Dezelfde vraag wordt onthouden en niet opnieuw gesteld.</li>
+          </ul>
+          <p>
+            Door dit aan te zetten kies je er bewust voor om die dienst te gebruiken.
+            <a href="https://operations.osmfoundation.org/policies/nominatim/" target="_blank" rel="noopener noreferrer">Lees het gebruiksbeleid</a>.
+            Staat het uit, dan gaat er nooit een zoektekst naar internet.
+          </p>
+        </div>
+      </details>
+
+      <details class="card">
+        <summary><h2>Hoe werkt het?</h2></summary>
+        <ol class="help">
+          <li>Sluit je iPhone aan met de kabel en ontgrendel hem. Bij &ldquo;1. Je iPhone&rdquo; hoort een groene stip te komen.</li>
+          <li><strong>Vaste plek:</strong> klik op de kaart en dan op de blauwe knop. Je iPhone staat dan op die plek.</li>
+          <li><strong>Route:</strong> klik een paar punten aan, kies lopen, fietsen of auto, en klik op &ldquo;Start route&rdquo;. Je nep-locatie beweegt dan langs die punten.</li>
+          <li>Zolang er iets actief is, staat bovenaan een gele balk. Stoppen doe je met de rode knop of de toets Esc. De timer stopt ook vanzelf.</li>
+          <li>Controleer na het stoppen in Apple Kaarten of je echte locatie weer klopt.</li>
+        </ol>
+      </details>
 
       <footer class="foot">
         <p>

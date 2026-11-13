@@ -33,6 +33,7 @@ from ghost.controller import Controller
 from ghost.device.base import LocationDevice
 from ghost.exit_hooks import ExitHooks
 from ghost.safety import Reason, RestoreResult, SafetyManager
+from ghost.store import Favorites, Settings
 from ghost.uitleg import DEVELOPER_MODE_REMINDER
 from ghost.web.app import create_app
 from ghost.web.security import new_token
@@ -173,7 +174,16 @@ async def serve(
     # In demomodus geen merkbestand: een nep-iPhone hoeft na een herstart niets op te ruimen.
     safety = SafetyManager(device, marker=None if demo else paths.active_marker())
     controller = Controller(safety, demo=demo, debug=debug, log_path=log_path, startup_delay=STARTUP_DELAY_S)
-    app = create_app(controller, token=new_token(), port=port, on_quit=lambda: stop.request(Reason.QUIT))
+    app = create_app(
+        controller,
+        token=new_token(),
+        port=port,
+        on_quit=lambda: stop.request(Reason.QUIT),
+        # In demomodus blijven favorieten en instellingen alleen in het geheugen:
+        # de demo raakt je echte gegevens nooit aan.
+        favorites=Favorites(None if demo else paths.favorites_file()),
+        settings=Settings(None if demo else paths.settings_file()),
+    )
     config = uvicorn.Config(
         app,
         loop="none",  # wij kiezen de event loop zelf (zie run_web)

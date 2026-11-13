@@ -13,6 +13,12 @@ De regisseur heeft ook een "bewaking": een taak die elke seconde even kijkt.
 - Is de iPhone nog niet klaar?                     -> af en toe opnieuw controleren,
                                                       zodat de pagina vanzelf
                                                       bijwerkt als je iets oplost.
+- Loopt er een route?                              -> het volgende punt uitrekenen
+                                                      en naar de iPhone sturen.
+
+Een route werkt zo: de regisseur weet hoeveel meter er is afgelegd. Elke
+seconde telt hij daar `snelheid x verstreken tijd` bij op, zoekt het punt dat
+bij die afstand hoort (de wiskunde staat in geo.py) en zet de nep-locatie daar.
 """
 
 from __future__ import annotations
@@ -20,7 +26,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections import OrderedDict
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,7 +35,17 @@ from typing import Any
 from ghost import __version__
 from ghost.coords import format_for_log, format_for_screen
 from ghost.device.base import DeviceError, DeviceStatus, Problem
-from ghost.geo import LatLon
+from ghost.geo import (
+    SPEED_MAX_KMH,
+    SPEED_MIN_KMH,
+    SPEED_PRESETS_KMH,
+    LatLon,
+    Route,
+    destination_point,
+    distance_after,
+    eta_seconds,
+)
+from ghost.osm import MAX_WAYPOINTS, OsmError, RoutingClient
 from ghost.safety import ClosingError, Reason, RestoreResult, SafetyManager
 from ghost.uitleg import DEVELOPER_MODE_REMINDER, uitleg
 
@@ -58,6 +75,17 @@ CHECKS = (
     ("location_service", "Locatiedienst bereikbaar", "Locatiedienst niet bereikbaar"),
 )
 
+#: Soorten routes: een rechte lijn, of over de weg te voet, met de fiets of met de auto.
+ROUTE_MODES = ("line", "foot", "bike", "car")
+ROUTE_MODE_TEXT = {"line": "rechte lijn", "foot": "lopen", "bike": "fietsen", "car": "auto"}
+#: Was Ghost even bezig of sliep de laptop, dan springt de route niet ineens ver vooruit.
+MAX_STEP_S = 3.0
+KEPT_PLANS = 5
+
+#: Windrichtingen voor het verschuiven, in graden (0 = noord).
+DIRECTIONS = {"n": 0, "ne": 45, "e": 90, "se": 135, "s": 180, "sw": 225, "w": 270, "nw": 315}
+NUDGE_MAX_M = 1000
+
 ACTIONS = {
     "pair": "het koppelen",
     "reveal": "het zichtbaar maken van Developer Mode",
@@ -73,6 +101,34 @@ class ControllerError(Exception):
         self.message = message
         self.problem = problem
         self.detail = detail
+
+
+@dataclass
+class RoutePlan:
+    """Een uitgerekende route die klaarstaat om gestart te worden."""
+
+    id: int
+    waypoints: list[LatLon]  #: de punten die je hebt aangeklikt
+    mode: str  #: "line", "foot", "bike" of "car"
+    round_trip: bool
+    repeat: bool
+    route: Route  #: de wiskunde: waar ben je na x meter?
+
+    @property
+    def length_m(self) -> float:
+        return self.route.length_m
+
+
+@dataclass
+class ActiveRoute:
+    """Een route die nu loopt."""
+
+    plan: RoutePlan
+    speed_kmh: float
+    last_mono: float  #: tijdstip van de vorige stap
+    travelled_m: float = 0.0  #: totaal afgelegd, over alle rondes
+    paused: bool = False
+    finished: bool = False
 
 
 @dataclass(frozen=True)
@@ -96,6 +152,7 @@ class Controller:
         debug: bool = False,
         log_path: Path | None = None,
         startup_delay: float = 0.0,
+        routing: RoutingClient | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -112,6 +169,11 @@ class Controller:
         self.busy: str | None = None  #: "pair", "reveal" of "mount" als die nu loopt
         self.connection_lost = False  #: verbinding weg terwijl er een nep-locatie actief is
         self.notice: Notice | None = None
+        self.route: ActiveRoute | None = None  #: de route die nu loopt, of None bij een vaste plek
+
+        self._routing = routing or RoutingClient()
+        self._plans: OrderedDict[int, RoutePlan] = OrderedDict()
+        self._plan_count = 0
 
         self._started_at: float | None = None
         self._minutes: int | None = None
@@ -220,7 +282,12 @@ class Controller:
                     await self.refresh_status()  # zodat het statuspaneel laat zien wat er mis is
             return
 
-        # 4. Niets actief: houd het statuspaneel actueel zolang de iPhone niet klaar is.
+        # 4. Loopt er een route? Dan het volgende punt zetten.
+        if self.route is not None and safety.point is not None:
+            await self._advance_route(now)
+            return
+
+        # 5. Niets actief: houd het statuspaneel actueel zolang de iPhone niet klaar is.
         if safety.point is None and self.busy is None and not self.checking:
             not_ready = self.status is None or not self.status.ready or not alive
             if not_ready and now >= self._next_status:
@@ -260,6 +327,162 @@ class Controller:
     async def set_fixed(self, point: LatLon, minutes: int | None = None) -> None:
         """Zet een vaste nep-locatie en start de auto-stop-timer."""
         minutes = self._check_minutes(TIMER_DEFAULT_MIN if minutes is None else minutes)
+        await self._require_ready()
+        await self._apply(point)
+
+        self.route = None  # een vaste plek vervangt een lopende route
+        self._started_at = self._clock()
+        self._start_timer(minutes)
+        self.connection_lost = False
+        log.info(
+            "Nep-locatie gezet: %s (auto-stop na %d min)", format_for_log(point, precise=self.debug), minutes
+        )
+        self._notify(
+            "info",
+            "Nep-locatie actief",
+            "Je iPhone geeft deze locatie nu door aan alle apps. Controleer het in Apple Kaarten.",
+        )
+
+    async def nudge(self, direction: str, meters: int) -> None:
+        """Verschuif de actieve nep-locatie een stukje in een windrichting. De timer loopt gewoon door."""
+        if direction not in DIRECTIONS:
+            raise ControllerError("Onbekende richting.")
+        if not isinstance(meters, int) or isinstance(meters, bool) or not 1 <= meters <= NUDGE_MAX_M:
+            raise ControllerError(f"Kies een stap tussen 1 en {NUDGE_MAX_M} meter.")
+        point = self.safety.point
+        if point is None:
+            raise ControllerError("Er is geen nep-locatie actief om te verschuiven.")
+        if self.route is not None and not self.route.finished:
+            raise ControllerError("Tijdens een route kun je niet verschuiven. Stop de route eerst.")
+        await self._require_ready()
+        await self._apply(destination_point(point, DIRECTIONS[direction], meters))
+        self.route = None
+
+    # ------------------------------------------------------------------
+    # Routes
+    # ------------------------------------------------------------------
+
+    async def plan_route(
+        self, waypoints: Sequence[LatLon], mode: str, *, round_trip: bool = False, repeat: bool = False
+    ) -> RoutePlan:
+        """Reken een route uit langs deze punten. Er gaat nog niets naar de iPhone."""
+        if mode not in ROUTE_MODES:
+            raise ControllerError("Onbekend soort route.")
+        # Twee keer hetzelfde punt achter elkaar telt als één punt.
+        points: list[LatLon] = []
+        for point in waypoints:
+            if not points or point != points[-1]:
+                points.append(point)
+        if len(points) < 2:
+            raise ControllerError("Een route heeft minstens twee verschillende punten nodig.")
+        if len(points) > MAX_WAYPOINTS:
+            raise ControllerError(f"Een route mag hooguit {MAX_WAYPOINTS} punten hebben.")
+
+        path: Sequence[LatLon] = points
+        if mode != "line":
+            try:
+                path = (await self._routing.route(points, mode)).points
+            except OsmError as error:
+                raise ControllerError(error.message) from error
+        route = Route(path, round_trip=round_trip, repeat=repeat)
+        if route.length_m < 1:
+            raise ControllerError("Deze route is te kort. Zet de punten verder uit elkaar.")
+
+        self._plan_count += 1
+        plan = RoutePlan(self._plan_count, points, mode, round_trip, repeat, route)
+        self._plans[plan.id] = plan
+        while len(self._plans) > KEPT_PLANS:
+            self._plans.popitem(last=False)
+        log.info("Route uitgerekend: %s, %.1f km", ROUTE_MODE_TEXT[mode], plan.length_m / 1000)
+        return plan
+
+    async def start_route(self, plan_id: int, speed_kmh: float, minutes: int | None = None) -> None:
+        """Start een uitgerekende route: zet de nep-locatie op het beginpunt en ga bewegen."""
+        plan = self._plans.get(plan_id)
+        if plan is None:
+            raise ControllerError("Deze route is verlopen. Klik de punten opnieuw aan.")
+        speed = self._check_speed(speed_kmh)
+        minutes = self._check_minutes(TIMER_DEFAULT_MIN if minutes is None else minutes)
+        await self._require_ready()
+        await self._apply(plan.route.position_at(0).point)
+
+        self.route = ActiveRoute(plan, speed, last_mono=self._monotonic())
+        self._started_at = self._clock()
+        self._start_timer(minutes)
+        self.connection_lost = False
+        log.info(
+            "Route gestart: %s, %.1f km, %g km/u (auto-stop na %d min)",
+            ROUTE_MODE_TEXT[plan.mode],
+            plan.length_m / 1000,
+            speed,
+            minutes,
+        )
+        self._notify(
+            "info",
+            "Route gestart",
+            "Je nep-locatie beweegt nu langs de route. Controleer het in Apple Kaarten.",
+        )
+
+    def pause_route(self) -> None:
+        route = self._moving_route()
+        route.paused = True
+
+    def resume_route(self) -> None:
+        route = self._moving_route()
+        route.paused = False
+        route.last_mono = self._monotonic()  # de pauze telt niet mee als afgelegde tijd
+
+    def set_route_speed(self, speed_kmh: float) -> None:
+        route = self._moving_route()
+        route.speed_kmh = self._check_speed(speed_kmh)
+
+    def route_path(self, plan_id: int | None = None) -> list[LatLon]:
+        """De lijn van een route, om op de kaart te tekenen. Zonder nummer: de route die nu loopt."""
+        plan = self._plans.get(plan_id) if plan_id is not None else (self.route.plan if self.route else None)
+        if plan is None:
+            raise ControllerError("Deze route bestaat niet (meer).")
+        return plan.route.path
+
+    def _moving_route(self) -> ActiveRoute:
+        if self.route is None or self.safety.point is None:
+            raise ControllerError("Er loopt geen route.")
+        if self.route.finished:
+            raise ControllerError("Deze route is al klaar.")
+        return self.route
+
+    async def _advance_route(self, now: float) -> None:
+        """Eén stap van de route: reken uit waar we nu horen te zijn en zet de nep-locatie daar."""
+        route = self.route
+        if route is None:
+            return
+        elapsed = max(0.0, min(now - route.last_mono, MAX_STEP_S))
+        route.last_mono = now
+        if route.paused or route.finished:
+            return
+        route.travelled_m += distance_after(route.speed_kmh, elapsed)
+        position = route.plan.route.position_at(route.travelled_m)
+        try:
+            await self.safety.set_location(position.point)
+        except ClosingError:
+            return
+        except Exception as error:
+            self._set_failed(error)  # zet zelf een melding neer en stopt de route
+            return
+        if position.finished:
+            route.finished = True
+            log.info("Route klaar")
+            self._notify(
+                "ok",
+                "Route klaar",
+                "Je nep-locatie blijft op het eindpunt staan tot de timer afloopt of je op de rode knop klikt.",
+            )
+
+    # ------------------------------------------------------------------
+    # Hulp bij het zetten
+    # ------------------------------------------------------------------
+
+    async def _require_ready(self) -> None:
+        """Mag er nu een nep-locatie gezet worden? Zo niet: zeg in gewone taal waarom niet."""
         safety = self.safety
         if safety.closing:
             raise ControllerError("Ghost wordt afgesloten. Start Ghost opnieuw om een locatie te zetten.")
@@ -278,39 +501,34 @@ class Controller:
                     detail=status.detail,
                 )
 
+    async def _apply(self, point: LatLon) -> None:
+        """Zet de nep-locatie via de veiligheidsbewaker. Mislukt het, dan volgt een nette foutmelding."""
         try:
-            await safety.set_location(point)
+            await self.safety.set_location(point)
         except ClosingError:
             raise ControllerError("Ghost wordt afgesloten. Start Ghost opnieuw om een locatie te zetten.") from None
         except Exception as error:
-            problem = error.problem if isinstance(error, DeviceError) else Problem.UNKNOWN
-            detail = error.detail if isinstance(error, DeviceError) else repr(error)
-            if not isinstance(error, DeviceError):
-                log.exception("Onverwachte fout bij het zetten van de nep-locatie")
-            restored = safety.last_restore is not None and safety.last_restore.ok
-            if restored:
-                self._clear_timer()
-                message = "De nep-locatie zetten is mislukt. Voor de zekerheid is je echte locatie teruggevraagd."
-            else:
-                message = (
-                    "De nep-locatie zetten is mislukt, en je echte locatie kon NIET worden teruggevraagd. "
-                    "Ghost blijft het proberen."
-                )
-            self._next_status = 0.0  # de bewaking controleert de iPhone meteen opnieuw
-            self._notify("error", "Nep-locatie zetten mislukt", f"{message} {CHECK_APPLE_MAPS}")
-            raise ControllerError(message, problem=problem, detail=detail) from error
+            raise self._set_failed(error) from error
 
-        self._started_at = self._clock()
-        self._start_timer(minutes)
-        self.connection_lost = False
-        log.info(
-            "Nep-locatie gezet: %s (auto-stop na %d min)", format_for_log(point, precise=self.debug), minutes
-        )
-        self._notify(
-            "info",
-            "Nep-locatie actief",
-            "Je iPhone geeft deze locatie nu door aan alle apps. Controleer het in Apple Kaarten.",
-        )
+    def _set_failed(self, error: Exception) -> ControllerError:
+        """Het zetten is mislukt. De veiligheidsbewaker heeft de echte locatie dan al teruggevraagd."""
+        problem = error.problem if isinstance(error, DeviceError) else Problem.UNKNOWN
+        detail = error.detail if isinstance(error, DeviceError) else repr(error)
+        if not isinstance(error, DeviceError):
+            log.error("Onverwachte fout bij het zetten van de nep-locatie", exc_info=error)
+        self.route = None
+        restored = self.safety.last_restore is not None and self.safety.last_restore.ok
+        if restored:
+            self._clear_timer()
+            message = "De nep-locatie zetten is mislukt. Voor de zekerheid is je echte locatie teruggevraagd."
+        else:
+            message = (
+                "De nep-locatie zetten is mislukt, en je echte locatie kon NIET worden teruggevraagd. "
+                "Ghost blijft het proberen."
+            )
+        self._next_status = 0.0  # de bewaking controleert de iPhone meteen opnieuw
+        self._notify("error", "Nep-locatie zetten mislukt", f"{message} {CHECK_APPLE_MAPS}")
+        return ControllerError(message, problem=problem, detail=detail)
 
     async def stop(self, reason: Reason = Reason.BUTTON) -> RestoreResult:
         """Vraag de echte locatie terug. Mag altijd, ook als er niets actief lijkt."""
@@ -383,6 +601,7 @@ class Controller:
         if result.ok:
             self._clear_timer()
             self.connection_lost = False
+            self.route = None
             self._announce_restored(result, first_of_session)
         elif announce_failure:
             self._notify(
@@ -433,6 +652,14 @@ class Controller:
             raise ControllerError(f"Kies voor de timer een aantal minuten tussen 1 en {TIMER_MAX_MIN}.")
         return minutes
 
+    @staticmethod
+    def _check_speed(speed_kmh: Any) -> float:
+        if isinstance(speed_kmh, bool) or not isinstance(speed_kmh, (int, float)):
+            raise ControllerError("De snelheid moet een getal zijn.")
+        if not SPEED_MIN_KMH <= speed_kmh <= SPEED_MAX_KMH:
+            raise ControllerError(f"Kies een snelheid tussen {SPEED_MIN_KMH:g} en {SPEED_MAX_KMH:g} km/u.")
+        return float(speed_kmh)
+
     def _start_timer(self, minutes: int) -> None:
         self._minutes = minutes
         self._deadline_wall = self._clock() + minutes * 60
@@ -480,7 +707,9 @@ class Controller:
                 "uncertain": safety.uncertain,
                 "connection_lost": self.connection_lost,
                 "clean_start_done": safety.clean_start_done,
+                "route": self._route_snapshot(),
             },
+            "speeds": {"presets": dict(SPEED_PRESETS_KMH), "min": SPEED_MIN_KMH, "max": SPEED_MAX_KMH},
             "timer": {
                 "default": TIMER_DEFAULT_MIN,
                 "choices": list(TIMER_CHOICES_MIN),
@@ -496,6 +725,28 @@ class Controller:
                 "hint": self.notice.hint,
                 "at": self.notice.at,
             },
+        }
+
+    def _route_snapshot(self) -> dict[str, Any] | None:
+        route = self.route
+        if route is None or self.safety.point is None:
+            return None
+        plan = route.plan
+        position = plan.route.position_at(route.travelled_m)
+        eta = eta_seconds(position.remaining_m, route.speed_kmh)
+        return {
+            "plan_id": plan.id,
+            "mode": plan.mode,
+            "round_trip": plan.round_trip,
+            "repeat": plan.repeat,
+            "speed_kmh": route.speed_kmh,
+            "paused": route.paused,
+            "finished": route.finished,
+            "length_m": round(plan.length_m, 1),
+            "travelled_m": round(position.travelled_m, 1),
+            "remaining_m": round(position.remaining_m, 1),
+            "lap": position.lap + 1,
+            "eta_s": None if route.finished else int(eta + 0.999),
         }
 
     def _device_snapshot(self) -> dict[str, Any]:

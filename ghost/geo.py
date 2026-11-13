@@ -61,6 +61,28 @@ def intermediate_point(a: LatLon, b: LatLon, fraction: float) -> LatLon:
     return LatLon(math.degrees(math.atan2(z, math.hypot(x, y))), math.degrees(math.atan2(y, x)))
 
 
+def destination_point(start: LatLon, bearing_deg: float, distance_m: float) -> LatLon:
+    """Het punt dat je bereikt als je vanaf `start` `distance_m` meter in een richting gaat.
+
+    De richting is in graden: 0 = noord, 90 = oost, 180 = zuid, 270 = west.
+    """
+    lat1, lon1 = math.radians(start.lat), math.radians(start.lon)
+    bearing = math.radians(bearing_deg)
+    angle = distance_m / EARTH_RADIUS_M  # afgelegde hoek over de bol
+    lat2 = math.asin(math.sin(lat1) * math.cos(angle) + math.cos(lat1) * math.sin(angle) * math.cos(bearing))
+    lon2 = lon1 + math.atan2(
+        math.sin(bearing) * math.sin(angle) * math.cos(lat1),
+        math.cos(angle) - math.sin(lat1) * math.sin(lat2),
+    )
+    lon_deg = (math.degrees(lon2) + 540) % 360 - 180  # terug naar -180..180
+    return LatLon(math.degrees(lat2), lon_deg)
+
+
+def path_length_m(points: Sequence[LatLon]) -> float:
+    """Totale lengte in meters van een lijn langs deze punten."""
+    return sum(haversine_m(a, b) for a, b in zip(points, points[1:]))
+
+
 def clamp_speed_kmh(speed_kmh: float) -> float:
     """Begrens een snelheid op het toegestane bereik (1-120 km/u)."""
     if not math.isfinite(speed_kmh):
