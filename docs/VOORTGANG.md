@@ -61,17 +61,22 @@ voor Windows, veiligheid eerst").
       blijft daar zolang de opdracht loopt; na Enter binnen enkele seconden terug.
 - [x] Proef A: `clear` zonder actieve simulatie is onschadelijk: stip bleef op de echte
       locatie, ontvangst bevestigd. De schone start (clear bij opstarten) mag dus.
-- [ ] Proef C: `set ... --no-clear` -> blijft de nep-locatie staan als Ghost afsluit
-      zonder clear? (nog niet gedaan; bepaalt het ontwerp van de SafetyManager en de
-      teksten van de herstelhulp)
+- [x] Proef C: na `set ... --no-clear` (Ghost sluit af ZONDER clear) BLEEF de stip in
+      Parijs staan. Pas na `clear` kwam de echte locatie terug. Precieze wachttijd niet
+      gemeten.
+      GEVOLG: de nep-locatie overleeft het wegvallen van Ghost. Ghost moet dus bij elke
+      afsluitroute clear sturen, bij opstarten clear sturen (schone start), en bij een
+      weggevallen verbinding hard waarschuwen dat de iPhone nog op de nep-locatie staat.
+      De herstelhulp moet `clear` als eerste stap noemen.
+- [ ] Nog onbekend: blijft de nep-locatie staan na een HERSTART van de iPhone? Na het
+      uittrekken van de kabel?
 - [x] Proef D: Ctrl+C tijdens `set` zet de echte locatie terug, ontvangst bevestigd,
       daarna "Gestopt met Ctrl+C". Werkt in PowerShell op Windows.
 - [ ] Overige punten uit de handmatige checklist in de prompt.
 
 ## Volgende stappen
 
-1. Uitslag van proef C precies vastleggen (zie hierboven).
-2. Stap 3: SafetyManager (schone start met clear() pas als proef A geslaagd is,
+1. Stap 3: SafetyManager (schone start met clear() pas als proef A geslaagd is,
    herstel bij Ctrl+C, venster sluiten via SetConsoleCtrlHandler, onverwachte fout).
 3. Stap 5: backend (FastAPI op 127.0.0.1, sessietoken, Host- en Origin-controle,
    geen CORS) + MovementEngine.
