@@ -78,9 +78,9 @@ voor Windows, veiligheid eerst").
 
 1. Stap 3: SafetyManager (schone start met clear() pas als proef A geslaagd is,
    herstel bij Ctrl+C, venster sluiten via SetConsoleCtrlHandler, onverwachte fout).
-3. Stap 5: backend (FastAPI op 127.0.0.1, sessietoken, Host- en Origin-controle,
+2. Stap 5: backend (FastAPI op 127.0.0.1, sessietoken, Host- en Origin-controle,
    geen CORS) + MovementEngine.
-4. Stap 6: webinterface voor vast punt: kaart, rode balk "NEP-LOCATIE ACTIEF",
+3. Stap 6: webinterface voor vast punt: kaart, rode balk "NEP-LOCATIE ACTIEF",
    stopknop (ook Esc), auto-stop-timer. Daarna route (7), hartslag (8),
    favorieten (9), herstelhulp/README/SECURITY.md (10).
-5. `start.bat` zodat de gebruiker met dubbelklikken start.
+4. `start.bat` zodat de gebruiker met dubbelklikken start.
