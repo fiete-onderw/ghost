@@ -1,0 +1,2 @@
+# Windows-startbestanden moeten Windows-regeleinden (CRLF) houden, ook in de ZIP van GitHub.
+*.bat -text
