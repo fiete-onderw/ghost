@@ -4,7 +4,7 @@
 
 Ghost is a Windows app that replaces the GPS location of your own iPhone (connected by USB cable) with a simulated one. It uses Apple's own location simulation from Developer Mode, through the open-source library [pymobiledevice3](https://github.com/doronz88/pymobiledevice3). No jailbreak, no changes to iOS.
 
-> **Status: work in progress.** A fixed location works from a page in your browser, with a stop button and an auto-stop timer. Routes, favourites, the heartbeat and the recovery guide are still being built.
+> **Status: work in progress.** From a page in your browser you can set a fixed location or let the location move along a route (walking, cycling or driving speed), nudge it with arrow buttons, save favourites and optionally search by address. There is always a stop button and an auto-stop timer. The heartbeat ("stop when I close the tab") and the recovery guide are still being built.
 
 ![Ghost with a simulated location active](docs/img/ghost-actief.jpg)
 
@@ -18,7 +18,17 @@ Safe for **you**, the user:
 - the web page only listens on your own computer (`127.0.0.1`) and refuses requests from other websites;
 - your saved places and logs stay on your own computer.
 
-"Safe" does **not** mean invisible. Ghost does nothing to hide the simulation from apps or anti-cheat systems, and it never will.
+"Safe" does **not** mean invisible. Ghost does nothing to hide the simulation from apps or anti-cheat systems, and it never will. That is also why routes move at a constant speed without artificial "human" noise.
+
+## What leaves your computer
+
+Ghost itself runs entirely on your computer. Only these requests go to the internet, and only when you trigger them:
+
+| What | Where to | When |
+| --- | --- | --- |
+| Map images | `tile.openstreetmap.org` | While you look at the map. |
+| A route along roads | `routing.openstreetmap.de` (FOSSGIS) | When you plan a route with "Volg de weg" on. The points you clicked are sent. Turn it off for a straight line. |
+| An address search | `nominatim.openstreetmap.org` | Only after you switch on address search in the settings, and only when you click "Zoek". Off by default; see the [usage policy](https://operations.osmfoundation.org/policies/nominatim/). |
 
 ## Disclaimer
 
@@ -53,7 +63,10 @@ How the pieces fit together:
 | `ghost/device/` | Talks to the iPhone (`iphone.py`) or a fake one (`fake.py`). |
 | `ghost/safety.py` | The safety manager: every location change goes through it, and it always clears on exit. |
 | `ghost/exit_hooks.py` | Catches Ctrl+C and the console window being closed. |
-| `ghost/controller.py` | Auto-stop timer, connection watchdog and the state shown on the page. |
+| `ghost/controller.py` | Auto-stop timer, connection watchdog, routes and the state shown on the page. |
+| `ghost/geo.py` | Pure route maths: distances, positions along a route. |
+| `ghost/osm.py`, `ghost/net.py` | The two OpenStreetMap services (routing, address search), throttled to one request per second. |
+| `ghost/store.py` | Favourites and settings, as JSON files in `%LOCALAPPDATA%\Ghost`. |
 | `ghost/web/security.py` | Host check, Origin check and session token. No CORS. |
 | `ghost/web/app.py` | The API the page talks to. |
 | `ghost/web/server.py` | Start-up and shutdown order. |

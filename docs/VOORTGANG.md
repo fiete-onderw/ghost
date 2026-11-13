@@ -53,6 +53,52 @@ vooraf te vragen; ze zijn allemaal makkelijk te veranderen (de plek staat erbij)
     iets actief is. Er staan geen coördinaten in. Staat het er nog bij het opstarten, dan meldt
     Ghost "vorige keer niet netjes afgesloten". Niet in demomodus.
 
+### Keuzes bij routes, favorieten en zoeken (13 nov 2026, tweede ronde)
+
+14. "Volg de weg" staat standaard AAN. De aangeklikte punten gaan dan naar
+    `routing.openstreetmap.de`. Dat staat bij het vinkje; uit = rechte lijn, niets naar internet.
+    Routes over de weg langer dan 500 km hemelsbreed vraagt Ghost niet aan de gratis server.
+15. Aan het eind van een route blijft de nep-locatie op het eindpunt staan (tot timer of stop).
+16. Een route beweegt met vaste snelheid, zonder nagemaakte "menselijke" ruis. Ghost verbergt de
+    simulatie niet (zie README); dat blijft zo.
+17. Verschuiven met de pijltjes kan alleen als de plek stilstaat, niet tijdens een route.
+    De timer loopt daarbij door.
+18. Favorieten worden bewaard op schijf (`favorieten.json`). Er is bewust GEEN lijst met
+    "recent gebruikt": dat zou ongevraagd bijhouden waar je was.
+19. Adres zoeken: standaard UIT (besluit 2). De schakelaar staat bij Instellingen, met de regels
+    en de link naar het beleid erbij. Zoeken gebeurt alleen op de knop of Enter.
+20. Ghost meldt zich bij de OSM-diensten als `Ghost-locatiesimulator/<versie>`, ZONDER de
+    repo-URL. De open vraag bij besluit 5 blijft dus open; het beleid eist alleen een herkenbare
+    naam.
+21. In demomodus blijven favorieten en instellingen in het geheugen; je echte bestanden worden
+    niet aangeraakt.
+
+### Inloggen met een account (Supabase): NOG NIET GEBOUWD, wacht op een besluit
+
+De gebruiker vroeg om inloggen met een account via Supabase, met tweestapsverificatie (2FA)
+en een bevestigde e-mail. Stand van zaken:
+
+- Er bestond nog geen Supabase-project voor Ghost. Het aanmaken ervan is in de cloud-sessie
+  tegengehouden door de beveiliging van die sessie. Er is dus niets aangemaakt en er is geen
+  inlogcode geschreven (ongetest inlogwerk is erger dan geen inlogwerk).
+- Gecontroleerd in de Supabase-documentatie:
+  - 2FA met een authenticator-app (TOTP) is gratis; de sms-variant kost geld.
+  - Na 2FA staat in het token `aal: "aal2"`; daarop kan Ghost controleren.
+  - De ingebouwde mailserver stuurt ALLEEN naar leden van de Supabase-organisatie
+    (fout `email_address_not_authorized` voor anderen) en maar een paar mails per uur. Vrienden
+    kunnen zich dus pas registreren nadat er een eigen mailserver (SMTP) is ingesteld.
+- Eerlijke kanttekeningen die de gebruiker moet wegen:
+  - Ghost draait op de eigen laptop. Een inlog houdt niemand tegen die achter die laptop zit en
+    de terminal-commando's of de code kan gebruiken. Het is een drempel, geen slot.
+  - Ghost wordt afhankelijk van internet en van Supabase. Gratis projecten worden na ongeveer
+    een week zonder gebruik gepauzeerd; dan kan niemand inloggen tot het project is hervat.
+  - E-mailadressen van gebruikers komen in een clouddatabase te staan.
+  - De rode knop mag NOOIT van inloggen afhangen.
+- Ontwerp als het doorgaat: Ghost praat zelf met Supabase (de pagina niet, zodat de strenge
+  browserregels blijven gelden); wachtwoord + bevestigde e-mail + verplichte TOTP; pas bij
+  `aal2` mag er een locatie gezet worden; stoppen, status en afsluiten werken altijd zonder
+  inloggen; alleen de publieke sleutel staat in de repo.
+
 ## Gecontroleerde technische feiten (pymobiledevice3 11.53.0, 12 nov 2026)
 
 - Vastgepind op 11.53.0 (nieuwer dan de 11.52.1 uit de prompt).
@@ -82,12 +128,21 @@ vooraf te vragen; ze zijn allemaal makkelijk te veranderen (de plek staat erbij)
   Een test bewaakt dat de functie in uvicorn nog bestaat.
 - Python op Windows haalt bestandstypen uit het register; daar staat soms ".js = platte tekst",
   en dan weigert de browser het script. `ghost/web/app.py` legt de typen daarom zelf vast.
+- Nominatim-beleid (gelezen 13 nov 2026), strenger dan eerder genoteerd. Hoofdpunten: hooguit
+  1 verzoek per seconde; een herkenbare User-Agent of Referer; bron vermelden; NIET automatisch
+  aanvullen; geen reeksen zoekopdrachten; resultaten bewaren. Over taalmodellen staat er dat door
+  een LLM gemaakte code aan alle regels moet voldoen, en dat gebruik alleen mag als de
+  ontwikkelaar van de app daar bewust en geïnformeerd voor kiest en zelf verantwoordelijk is.
+  Daarom: standaard uit, uitleg en link bij de schakelaar (`ghost/osm.py`, Instellingen).
+- Routeserver opnieuw getest: antwoord `code: "Ok"` met `routes[0].geometry.coordinates` als
+  `[lengtegraad, breedtegraad]`. Fouten komen soms als HTTP 200 met een andere `code`
+  (bv. bij 0,0), soms als HTTP 400 met `code: "NoRoute"`. `ghost/osm.py` vangt beide af.
 - Venster sluiten op Windows: Microsoft documenteert 5 seconden voor `CTRL_CLOSE_EVENT`.
   NIET gevonden: in welke volgorde meerdere programma's in hetzelfde venster worden gewaarschuwd.
   Dat is van belang omdat `start.bat` Ghost start via `uv` (en mogelijk een tussenprogramma van
   de virtuele omgeving). Zie de handmatige test hieronder.
 
-## Wat er gebouwd is (stappen 1 t/m 6, en start.bat)
+## Wat er gebouwd is (stappen 1 t/m 7, 9, start.bat en adres zoeken)
 
 - `ghost/device/` - interface, echte iPhone (`iphone.py`), nep-iPhone (`fake.py`)
 - `ghost/cli.py` - commando's `status`, `pair`, `reveal-developer-mode`, `mount`,
@@ -98,15 +153,24 @@ vooraf te vragen; ze zijn allemaal makkelijk te veranderen (de plek staat erbij)
 - Stap 5: `ghost/web/security.py` (Host, Origin, sessietoken, geen CORS),
   `ghost/web/app.py` (FastAPI), `ghost/web/server.py` (alleen 127.0.0.1; afsluitvolgorde in
   één `finally`), `ghost/controller.py` (timer, bewaking van de verbinding, statuspaneel).
-  De MovementEngine voor routes is er nog NIET; die komt bij stap 7.
+- Stap 7 (routes): `Controller.plan_route/start_route/pause_route/...` en
+  `Controller._advance_route` (de "MovementEngine": elke seconde het volgende punt),
+  `ghost/osm.py` (routeserver en zoekdienst, elk hooguit 1 verzoek per seconde),
+  `ghost/net.py` (de enige plek waar Ghost iets van internet ophaalt).
+- Stap 9 (favorieten): `ghost/store.py`, bestand `favorieten.json`.
+- Verschuiven met pijltjes: `Controller.nudge` en `geo.destination_point`.
+- Adres zoeken (Nominatim), standaard uit: `SearchClient` in `ghost/osm.py`,
+  instelling in `instellingen.json`.
 - Stap 6: `ghost/web/static/` (kaart met Leaflet + OpenStreetMap, statuspaneel met knoppen,
   balk "NEP-LOCATIE ACTIEF", rode stopknop + Esc, auto-stop-timer).
 - `start.bat` en `start-demo.bat` (dubbelklikken; de browser gaat vanzelf open).
-- 248 tests, allemaal groen op Linux (cloud). De 113 oude waren ook groen op de
-  Windows-laptop; de nieuwe zijn daar nog niet gedraaid.
+- 379 tests, allemaal groen op Linux (cloud). De 113 oudste waren ook groen op de
+  Windows-laptop; de rest is daar nog niet gedraaid.
 - De pagina is in een echte browser (Chromium) getest tegen de nep-iPhone: plek kiezen,
   coördinaten plakken, zetten, +15 min, Esc, statuspaneel met problemen, kabel eruit en erin,
-  afsluiten, "geen contact". Geen meldingen over de strenge browserregels (CSP).
+  afsluiten, "geen contact"; en in de tweede ronde: verschuiven, kopiëren, favorieten, een
+  route als rechte lijn en over de weg (echte routeserver), pauze, snelheid onderweg, herladen
+  tijdens een route, en één echte zoekopdracht. Geen meldingen over de strenge browserregels (CSP).
 
 ## Handmatige testresultaten (13 nov 2026, iOS 27, Windows)
 
@@ -132,7 +196,7 @@ vooraf te vragen; ze zijn allemaal makkelijk te veranderen (de plek staat erbij)
 
 Niets hiervan kon in de cloud getest worden: daar is geen Windows en geen iPhone.
 
-- [ ] `uv run pytest` op de Windows-laptop: 248 tests groen?
+- [ ] `uv run pytest` op de Windows-laptop: 379 tests groen?
 - [ ] `start.bat` dubbelklikken: zwart venster, browser opent `http://127.0.0.1:8765`.
 - [ ] Statuspaneel wordt groen ("Klaar: ...") met de echte iPhone, en meldt "Schone start gedaan".
 - [ ] Plek zetten via de kaart: stip in Apple Kaarten verspringt, gele balk verschijnt.
@@ -149,16 +213,20 @@ Niets hiervan kon in de cloud getest worden: daar is geen Windows en geen iPhone
       wordt de echte locatie vanzelf teruggevraagd? (Dit beantwoordt meteen de open vraag
       hierboven: blijft de nep-locatie staan na het uittrekken van de kabel?)
 - [ ] Laptop dichtklappen terwijl er iets actief is, later weer open: wat doet Ghost?
+- [ ] Route (lopen, een paar honderd meter): beweegt de stip in Apple Kaarten vloeiend mee?
+      Elke seconde gaat er een punt naar de iPhone; dat is op een echt toestel nog nooit gedaan.
+      Let op of Ghost na een paar minuten nog steeds reageert en of de rode knop meteen werkt.
+- [ ] Pauze en snelheid veranderen tijdens een route.
+- [ ] Verschuiven met de pijltjes: verspringt de stip in Apple Kaarten?
 
 ## Volgende stappen
 
 1. Eerst: de testlijst hierboven afwerken en de uitslagen hier noteren. Vooral "venster
-   sluiten" en "kabel eruit".
-2. Stap 7: routes. MovementEngine (stuurt elke seconde het volgende punt; `ghost/geo.py`
-   heeft de wiskunde al), de routeserver van OSM (zie feiten hierboven) en route-bediening
-   in de pagina. De timer en de bewaking in `Controller` blijven gelden.
+   sluiten", "kabel eruit" en "route op een echte iPhone".
+2. Besluit van de gebruiker over inloggen met Supabase (zie hierboven). Bij "ja": project
+   aanmaken, inloggen bouwen en tegen het echte project testen.
 3. Stap 8: de hartslag met twee standen ("ik zit erbij" en "op de achtergrond").
    Nu geldt alleen "op de achtergrond": tabblad sluiten stopt niets, de timer is het vangnet.
-4. Stap 9: favorieten in `%LOCALAPPDATA%\Ghost\`.
-5. Stap 10: herstelhulp, adres zoeken (Nominatim, standaard UIT), SECURITY.md,
-   `update.bat`.
+4. Stap 10: herstelhulp, SECURITY.md, `update.bat`.
+5. Ideeën voor later: een route uit een GPX-bestand, favorieten een naam laten wijzigen,
+   een route bewaren als favoriet.
