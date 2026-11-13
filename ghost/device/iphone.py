@@ -231,6 +231,9 @@ class IPhone(LocationDevice):
         # De tunnel breekt zichzelf af als de kabel eruit gaat; `rsd` wordt dan None.
         return self._sim is not None and self._tunnel is not None and self._tunnel.rsd is not None
 
+    def connection_alive(self) -> bool:
+        return self._is_connected()
+
     async def connect(self) -> None:
         async with self._lock:
             await self._connect_locked()

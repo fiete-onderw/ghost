@@ -109,5 +109,13 @@ class LocationDevice(ABC):
         """
 
     @abstractmethod
+    def connection_alive(self) -> bool:
+        """Staat er op dit moment een werkende verbinding met het toestel?
+
+        Dit kijkt alleen naar wat Ghost zelf al weet en stuurt NIETS naar het
+        toestel. Zo kan Ghost elke seconde controleren of de kabel er nog in zit.
+        """
+
+    @abstractmethod
     async def close(self) -> None:
         """Sluit de verbinding ZONDER de locatie terug te zetten."""

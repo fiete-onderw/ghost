@@ -26,6 +26,7 @@ class FakeDevice(LocationDevice):
         self.connected = False
         self.history: list[tuple[str, LatLon | None]] = []  #: alles wat er gezet en gewist is
         self.fail_next: Problem | None = None  #: laat de volgende set/clear mislukken (voor tests)
+        self.confirm_clear = True  #: zet op False om "ontvangst niet bevestigd" na te bootsen
 
     async def status(self) -> DeviceStatus:
         status = DeviceStatus()
@@ -54,6 +55,7 @@ class FakeDevice(LocationDevice):
                 status.problem = problem
                 return status
         status.ddi_mounted = True
+        self.connected = True  # net als bij een echte iPhone: een geslaagde controle laat de verbinding open
         return status
 
     async def pair(self, timeout: float = 60.0) -> None:
@@ -83,10 +85,22 @@ class FakeDevice(LocationDevice):
         self._maybe_fail()
         self.location = None
         self.history.append(("clear", None))
-        return True
+        return self.confirm_clear
+
+    def connection_alive(self) -> bool:
+        return self.connected
 
     async def close(self) -> None:
         self.connected = False
+
+    def unplug(self) -> None:
+        """Bootst na dat de kabel eruit wordt getrokken. De nep-locatie blijft staan, net als bij een echte iPhone."""
+        self.connected = False
+        self.problem = Problem.NO_DEVICE
+
+    def plug_in(self) -> None:
+        """Bootst na dat de kabel er weer in gaat."""
+        self.problem = None
 
     def _maybe_fail(self) -> None:
         if self.fail_next is not None:

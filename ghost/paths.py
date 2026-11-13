@@ -29,3 +29,13 @@ def log_dir() -> Path:
 
 def log_file() -> Path:
     return log_dir() / "ghost.log"
+
+
+def active_marker() -> Path:
+    """Een klein merkbestand dat bestaat zolang er (mogelijk) een nep-locatie actief is.
+
+    Er staan GEEN coördinaten in. Blijft het bestand staan omdat Ghost
+    onverwacht is weggevallen, dan weet de volgende start dat je iPhone
+    mogelijk nog op de nep-locatie staat.
+    """
+    return data_dir() / "nep-locatie-actief.txt"

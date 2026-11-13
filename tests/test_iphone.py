@@ -241,3 +241,15 @@ async def test_fout_bij_set_wordt_verbinding_verbroken(toestel):
         await toestel.set_location(LatLon(1, 2))
     assert fout.value.problem is Problem.CONNECTION_LOST
     assert toestel._sim is None  # de volgende actie bouwt een verse verbinding op
+
+
+async def test_verbinding_leeft_tot_de_tunnel_wegvalt(toestel):
+    """De bewaking kijkt elke seconde of de kabel er nog in zit, zonder iets naar de iPhone te sturen."""
+    assert toestel.connection_alive() is False  # nog niet verbonden
+    tunnel = NepTunnel()
+    verbind(toestel, tunnel)
+    tunnel.rsd = object()
+    await toestel.connect()
+    assert toestel.connection_alive() is True
+    tunnel.rsd = None  # dit doet pymobiledevice3 zelf als de kabel eruit gaat
+    assert toestel.connection_alive() is False
