@@ -59,16 +59,18 @@ voor Windows, veiligheid eerst").
 - [x] `status`: alle zeven controles OK, na `reveal-developer-mode` + Developer Mode aan.
 - [x] Proef B: `set 48.8584 2.2945` -> stip in Apple Kaarten naar de Eiffeltoren,
       blijft daar zolang de opdracht loopt; na Enter binnen enkele seconden terug.
-- [ ] Proef A: `clear` zonder actieve simulatie onschadelijk? (nog niet gedaan)
+- [x] Proef A: `clear` zonder actieve simulatie is onschadelijk: stip bleef op de echte
+      locatie, ontvangst bevestigd. De schone start (clear bij opstarten) mag dus.
 - [ ] Proef C: `set ... --no-clear` -> blijft de nep-locatie staan als Ghost afsluit
       zonder clear? (nog niet gedaan; bepaalt het ontwerp van de SafetyManager en de
       teksten van de herstelhulp)
-- [ ] Proef D: Ctrl+C tijdens `set` zet de echte locatie terug? (nog niet gedaan)
+- [x] Proef D: Ctrl+C tijdens `set` zet de echte locatie terug, ontvangst bevestigd,
+      daarna "Gestopt met Ctrl+C". Werkt in PowerShell op Windows.
 - [ ] Overige punten uit de handmatige checklist in de prompt.
 
 ## Volgende stappen
 
-1. Proef A, C en D laten uitvoeren en hier invullen.
+1. Uitslag van proef C precies vastleggen (zie hierboven).
 2. Stap 3: SafetyManager (schone start met clear() pas als proef A geslaagd is,
    herstel bij Ctrl+C, venster sluiten via SetConsoleCtrlHandler, onverwachte fout).
 3. Stap 5: backend (FastAPI op 127.0.0.1, sessietoken, Host- en Origin-controle,
