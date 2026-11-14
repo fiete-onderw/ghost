@@ -182,6 +182,50 @@ en een bevestigde e-mail. Stand van zaken:
   route als rechte lijn en over de weg (echte routeserver), pauze, snelheid onderweg, herladen
   tijdens een route, en één echte zoekopdracht. Geen meldingen over de strenge browserregels (CSP).
 
+## Robuuste verbinding (14 nov 2026)
+
+Aanleiding: bij een vriend van de gebruiker (iOS-versie nog onbekend) meldde Ghost eerst
+langdurig "Geen iPhone gevonden" terwijl Windows de iPhone wel zag; later werkte een vaste plek,
+maar kort na het starten van een route viel alles weg. Er is GEEN logbestand van dat voorval, dus
+de oorzaak van het wegvallen zelf is niet vastgesteld. Wel vastgesteld in de code:
+
+- Eén mislukt punt van een route, of één keer `connection_alive() == False`, leidde tot: route
+  weggooien en de echte locatie terugvragen. Geen enkele poging om opnieuw te verbinden.
+- pymobiledevice3 11.54.0 en 11.55.0 veranderen niets aan de USB-tunnel (diff bekeken); een
+  update lost dit dus niet op. Versie blijft 11.53.0.
+
+Wat er is gebouwd:
+
+- `ghost/device/iphone.py`: `_send_with_retry` (set en clear proberen het na een mislukking één
+  keer opnieuw over een verse verbinding; teller `reconnects`); `_find_usb_device` kijkt 3 keer
+  met 0,5 s ertussen; `TUNNEL_TIMEOUT_S` van 30 naar 20.
+- `ghost/hostusb.py`: vraagt Windows via PowerShell (`Get-PnpDevice`, VID_05AC, PID_12A8/12AB)
+  of er een iPhone/iPad op USB zit. Ziet Windows hem wel en usbmux niet, dan is het probleem
+  `Problem.NOT_LISTED` met eigen uitleg. NIET GETEST op Windows; bij elke fout is het antwoord
+  "onbekend" en volgt de gewone melding "Geen iPhone gevonden".
+- `SafetyManager.set_location(..., restore_on_failure=False)`: een actieve nep-locatie
+  verplaatsen zonder bij een fout meteen op te ruimen.
+- `Controller`: `_reconnect` (elke 2 s opnieuw verbinden en dezelfde plek opnieuw zetten, hooguit
+  `RECONNECT_GRACE_S` = 30 s; de route loopt daarna door zonder sprong); daarna pas het oude
+  gedrag (`connection_lost`, rode balk, clear zodra het kan). Een door storing afgebroken route
+  wordt bewaard (`interrupted`) en is te hervatten via `continue_route` (`/api/route/continue`,
+  knop "Hervat route"); `/api/route/forget` gooit hem weg. Dit is het oorspronkelijke ontwerp:
+  "hervat na herverbinden pas nadat ik dat bevestig".
+- `ghost/power.py`: `SetThreadExecutionState` zolang er iets actief is, zodat de laptop niet
+  vanzelf gaat slapen. NIET GETEST op Windows.
+- `ghost/diagnose.py` + `diagnose.bat`: rapport zonder naam, serienummer of exacte coördinaten,
+  met een stabiliteitstest (20 keer clear, één per seconde).
+- Pagina: oranje balk "VERBINDING EVEN WEG" en het blok "Hervat route". In Chromium getest tegen
+  de nep-iPhone: korte hapering, lange onderbreking, hervatten.
+
+Bluetooth: kan niet. usbmux/lockdown/RSD lopen via USB of wifi (netwerk), niet via Bluetooth.
+Wifi is een mogelijke latere uitbreiding (pymobiledevice3 kent tunnels via wifi), maar is voor de
+veiligheid zwakker: valt wifi weg, dan blijft de nep-locatie staan en kan Ghost niets terugvragen.
+
+Nog te doen zodra er een logbestand of diagnose van de vriend is: de echte oorzaak van het
+wegvallen bepalen (kandidaten: kabel/poort/hub, de iPhone die vergrendelt, USB-energiebeheer van
+Windows, de userspace-tunnel zelf).
+
 ## Handmatige testresultaten (13 nov 2026, iOS 27, Windows)
 
 - [x] `status`: alle zeven controles OK, na `reveal-developer-mode` + Developer Mode aan.
@@ -208,6 +252,14 @@ Niets hiervan kon in de cloud getest worden: daar is geen Windows en geen iPhone
 
 - [ ] `uv run pytest` op de Windows-laptop: 379 tests groen?
 - [ ] `start.bat` dubbelklikken: zwart venster, browser opent `http://127.0.0.1:8765`.
+- [ ] Kabel 5 seconden eruit tijdens een route en weer erin: oranje balk, daarna "Verbinding
+      hersteld" en de route loopt door? Blijft de stip in Apple Kaarten bewegen?
+- [ ] Kabel langer dan 30 seconden eruit tijdens een route: rode balk; kabel erin: echte locatie
+      terug en de knop "Hervat route"? Werkt hervatten?
+- [ ] `diagnose.bat` dubbelklikken: opent Verkenner met `ghost-diagnose.txt`? Staat er bij
+      "Wat Windows aan de USB-poort ziet" een regel met de iPhone?
+- [ ] iPhone laten vergrendelen (scherm uit) tijdens een actieve nep-locatie: blijft de
+      verbinding staan? Dit is een van de kandidaat-oorzaken en is nooit getest.
 - [ ] `start.bat` op een laptop ZONDER uv (of na het tijdelijk hernoemen van
       `%USERPROFILE%\.local\bin\uv.exe`): verschijnt "uv is klaar (controlecode klopt)",
       en start Ghost daarna? NIET getest: PowerShell kon in de cloud niet worden uitgevoerd.

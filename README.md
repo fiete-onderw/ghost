@@ -44,6 +44,8 @@ Download the ZIP from GitHub (**Code > Download ZIP**), extract it and double-cl
 
 The first start takes a few minutes. If [uv](https://docs.astral.sh/uv/) is not installed, `start.bat` downloads a pinned uv release (0.11.32) from uv's official GitHub page, checks it against a fixed SHA256 checksum and deletes it if it does not match (`scripts/installeer-uv.ps1`). uv then installs Python 3.13 and the hash-locked dependencies from `uv.lock`. Everything goes into `%LOCALAPPDATA%\Ghost` and a `.venv` folder next to Ghost: no PATH changes, no administrator rights. To uninstall, delete the Ghost folder and `%LOCALAPPDATA%\Ghost`.
 
+Something not working? Double-click `diagnose.bat`: it writes a report (no device name, serial number or exact coordinates) that you can send to whoever is helping you.
+
 No iPhone at hand? Double-click `start-demo.bat` to try the page with a fake iPhone.
 
 Step-by-step instructions in Dutch: [docs/STARTEN.md](docs/STARTEN.md).

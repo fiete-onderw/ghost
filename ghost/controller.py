@@ -7,9 +7,12 @@ veiligheidsbewaker (safety.py).
 De regisseur heeft ook een "bewaking": een taak die elke seconde even kijkt.
 
 - Is de tijd van de auto-stop-timer om?            -> echte locatie terugvragen.
-- Is de verbinding weg terwijl er iets actief is?  -> hard waarschuwen en blijven
-                                                      proberen de echte locatie
-                                                      terug te vragen.
+- Is de verbinding weg terwijl er iets actief is?  -> eerst een halve minuut zelf
+                                                      opnieuw verbinden en de
+                                                      nep-locatie (of route) laten
+                                                      doorlopen. Lukt dat niet: hard
+                                                      waarschuwen en blijven proberen
+                                                      de echte locatie terug te vragen.
 - Is de iPhone nog niet klaar?                     -> af en toe opnieuw controleren,
                                                       zodat de pagina vanzelf
                                                       bijwerkt als je iets oplost.
@@ -46,6 +49,7 @@ from ghost.geo import (
     eta_seconds,
 )
 from ghost.osm import MAX_WAYPOINTS, OsmError, RoutingClient
+from ghost.power import KeepAwake
 from ghost.safety import ClosingError, Reason, RestoreResult, SafetyManager
 from ghost.uitleg import DEVELOPER_MODE_REMINDER, uitleg
 
@@ -61,6 +65,13 @@ TICK_S = 1.0  #: hoe vaak de bewaking kijkt
 STATUS_RETRY_S = 5.0  #: hoe vaak de status opnieuw wordt gecontroleerd zolang de iPhone niet klaar is
 RESTORE_RETRY_S = 5.0  #: hoe vaak het terugvragen opnieuw wordt geprobeerd na een mislukking
 PAIR_TIMEOUT_S = 60.0
+#: Valt de verbinding weg terwijl er iets actief is, dan probeert Ghost zo lang
+#: zelf opnieuw te verbinden voordat hij het opgeeft en hard waarschuwt. Lang
+#: genoeg om een kabel opnieuw in te steken.
+RECONNECT_GRACE_S = 30.0
+RECONNECT_RETRY_S = 2.0  #: tijd tussen twee pogingen om opnieuw te verbinden
+#: Vanaf zoveel herstelde haperingen in één sessie geeft Ghost advies over de kabel.
+RECONNECT_ADVICE_AFTER = 3
 
 CHECK_APPLE_MAPS = "Controleer in Apple Kaarten of je echte locatie weer klopt."
 
@@ -131,6 +142,16 @@ class ActiveRoute:
     finished: bool = False
 
 
+@dataclass
+class InterruptedRoute:
+    """Een route die is afgebroken doordat de verbinding wegviel. Je kunt hem hervatten."""
+
+    plan: RoutePlan
+    travelled_m: float
+    speed_kmh: float
+    minutes: int  #: de timer die je voor deze route had gekozen
+
+
 @dataclass(frozen=True)
 class Notice:
     """Een melding voor de gebruiker. `kind` is "ok", "info", "warn" of "error"."""
@@ -153,6 +174,7 @@ class Controller:
         log_path: Path | None = None,
         startup_delay: float = 0.0,
         routing: RoutingClient | None = None,
+        keep_awake: KeepAwake | None = None,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -170,6 +192,13 @@ class Controller:
         self.connection_lost = False  #: verbinding weg terwijl er een nep-locatie actief is
         self.notice: Notice | None = None
         self.route: ActiveRoute | None = None  #: de route die nu loopt, of None bij een vaste plek
+        #: Tijdstip waarop Ghost begon met opnieuw verbinden, of None als de verbinding in orde is.
+        self.reconnecting_since: float | None = None
+        self.reconnect_problem: Problem | None = None  #: waarom opnieuw verbinden nog niet lukt
+        self.reconnects = 0  #: hoe vaak de verbinding deze sessie is hersteld
+        self.interrupted: InterruptedRoute | None = None  #: afgebroken route die je kunt hervatten
+        self._next_reconnect = 0.0
+        self._awake = keep_awake or KeepAwake()
 
         self._routing = routing or RoutingClient()
         self._plans: OrderedDict[int, RoutePlan] = OrderedDict()
@@ -203,6 +232,7 @@ class Controller:
         """Stop de bewaking. Loopt er nog een actie, dan krijgt die even de tijd om af te ronden."""
         monitor, self._monitor = self._monitor, None
         self._stopping.set()
+        self._awake.set(False)
         if monitor is None:
             return
         _, pending = await asyncio.wait({monitor}, timeout=2.0)
@@ -252,6 +282,8 @@ class Controller:
         if safety.closing:
             return
         now = self._monotonic()
+        # Zolang er iets actief is, mag de laptop niet vanzelf in slaap vallen.
+        self._awake.set(safety.needs_restore)
 
         # 1. Auto-stop-timer.
         if safety.point is not None and self._deadline_passed():
@@ -260,18 +292,12 @@ class Controller:
             await self._restore(Reason.TIMER)
             return
 
-        # 2. Verbinding weg terwijl er een nep-locatie actief is.
+        # 2. Verbinding weg terwijl er een nep-locatie actief is: eerst zelf herstellen.
         alive = safety.device.connection_alive()
-        if safety.point is not None and not alive and not self.connection_lost:
-            self.connection_lost = True
-            self._next_restore = now  # meteen een eerste poging
-            log.warning("Verbinding met de iPhone weg terwijl er een nep-locatie actief is")
-            self._notify(
-                "error",
-                "Verbinding met de iPhone weg",
-                "Je iPhone staat waarschijnlijk nog op de nep-locatie. Steek de kabel erin en ontgrendel "
-                "de iPhone. Ghost vraagt dan vanzelf je echte locatie terug.",
-            )
+        if safety.point is not None and not self.connection_lost and not safety.uncertain:
+            if self.reconnecting_since is not None or not alive:
+                await self._reconnect(now)
+                return
 
         # 3. Er moet nog opgeruimd worden: blijven proberen.
         if safety.uncertain or self.connection_lost:
@@ -331,6 +357,7 @@ class Controller:
         await self._apply(point)
 
         self.route = None  # een vaste plek vervangt een lopende route
+        self.interrupted = None
         self._started_at = self._clock()
         self._start_timer(minutes)
         self.connection_lost = False
@@ -407,6 +434,7 @@ class Controller:
         await self._apply(plan.route.position_at(0).point)
 
         self.route = ActiveRoute(plan, speed, last_mono=self._monotonic())
+        self.interrupted = None
         self._started_at = self._clock()
         self._start_timer(minutes)
         self.connection_lost = False
@@ -462,11 +490,13 @@ class Controller:
         route.travelled_m += distance_after(route.speed_kmh, elapsed)
         position = route.plan.route.position_at(route.travelled_m)
         try:
-            await self.safety.set_location(position.point)
+            # Een stap die mislukt is geen reden om de route weg te gooien: de iPhone
+            # staat dan nog op het vorige punt. De bewaking verbindt opnieuw en gaat verder.
+            await self.safety.set_location(position.point, restore_on_failure=False)
         except ClosingError:
             return
         except Exception as error:
-            self._set_failed(error)  # zet zelf een melding neer en stopt de route
+            self._begin_reconnecting(now, error)
             return
         if position.finished:
             route.finished = True
@@ -476,6 +506,106 @@ class Controller:
                 "Route klaar",
                 "Je nep-locatie blijft op het eindpunt staan tot de timer afloopt of je op de rode knop klikt.",
             )
+
+    # ------------------------------------------------------------------
+    # Zelf herstellen van een weggevallen verbinding
+    # ------------------------------------------------------------------
+
+    def _begin_reconnecting(self, now: float, error: Exception | None = None) -> None:
+        self.reconnect_problem = error.problem if isinstance(error, DeviceError) else None
+        if self.reconnecting_since is not None:
+            return
+        self.reconnecting_since = now
+        self._next_reconnect = now  # meteen een eerste poging
+        log.warning("Verbinding met de iPhone weg terwijl er een nep-locatie actief is; Ghost verbindt opnieuw")
+        self._notify(
+            "warn",
+            "Verbinding met de iPhone even weg",
+            "Ghost verbindt opnieuw. Je iPhone blijft intussen op de nep-locatie staan. "
+            "Controleer de kabel en ontgrendel de iPhone.",
+        )
+
+    async def _reconnect(self, now: float) -> None:
+        """Probeer de verbinding te herstellen en de nep-locatie opnieuw te zetten."""
+        safety = self.safety
+        self._begin_reconnecting(now)
+        assert self.reconnecting_since is not None
+        if now < self._next_reconnect:
+            return
+        self._next_reconnect = now + RECONNECT_RETRY_S
+        point = safety.point
+        if point is None:
+            return
+        try:
+            # Dezelfde plek opnieuw zetten: dat bouwt de verbinding op en bewijst dat hij werkt.
+            await safety.set_location(point, restore_on_failure=False)
+        except ClosingError:
+            return
+        except Exception as error:
+            self.reconnect_problem = error.problem if isinstance(error, DeviceError) else Problem.UNKNOWN
+            if self._monotonic() - self.reconnecting_since >= RECONNECT_GRACE_S:
+                self._give_up_reconnecting()
+            return
+
+        seconds = max(0.0, self._monotonic() - self.reconnecting_since)
+        self.reconnecting_since = None
+        self.reconnect_problem = None
+        self.reconnects += 1
+        moving = self.route is not None and not self.route.finished and not self.route.paused
+        if self.route is not None:
+            self.route.last_mono = self._monotonic()  # de tijd zonder verbinding telt niet als afgelegd
+        log.warning("Verbinding hersteld na %.0f seconden (herstel nummer %d deze sessie)", seconds, self.reconnects)
+        text = f"De verbinding was ongeveer {max(1, round(seconds))} seconden weg. "
+        text += "De route gaat verder waar hij was." if moving else "Je nep-locatie staat er nog."
+        hint = ""
+        if self.reconnects >= RECONNECT_ADVICE_AFTER:
+            hint = (
+                f"Dit is de {self.reconnects}e keer deze sessie. Dat wijst op een wankele kabel of USB-poort: "
+                "steek de kabel rechtstreeks in de laptop (geen hub) of probeer een andere kabel."
+            )
+        self._notify("ok", "Verbinding hersteld", text, hint)
+
+    def _give_up_reconnecting(self) -> None:
+        """Opnieuw verbinden lukt niet binnen de tijd: hard waarschuwen en blijven proberen op te ruimen."""
+        self.reconnecting_since = None
+        self.connection_lost = True
+        self._next_restore = self._monotonic()  # meteen een eerste poging
+        log.error("Opnieuw verbinden is niet gelukt binnen %.0f seconden", RECONNECT_GRACE_S)
+        self._notify(
+            "error",
+            "Verbinding met de iPhone weg",
+            "Je iPhone staat waarschijnlijk nog op de nep-locatie. Steek de kabel erin en ontgrendel "
+            "de iPhone. Ghost vraagt dan vanzelf je echte locatie terug.",
+        )
+
+    async def continue_route(self) -> None:
+        """Hervat een route die door een weggevallen verbinding is afgebroken, vanaf waar hij was."""
+        item = self.interrupted
+        if item is None:
+            raise ControllerError("Er is geen onderbroken route om te hervatten.")
+        if self.safety.point is not None:
+            raise ControllerError("Er is al een nep-locatie actief. Stop die eerst met de rode knop.")
+        await self._require_ready()
+        position = item.plan.route.position_at(item.travelled_m)
+        await self._apply(position.point)
+
+        self.route = ActiveRoute(
+            item.plan, item.speed_kmh, last_mono=self._monotonic(), travelled_m=item.travelled_m
+        )
+        self.interrupted = None
+        self._started_at = self._clock()
+        self._start_timer(item.minutes)
+        self.connection_lost = False
+        log.info("Route hervat op %.1f km van %.1f km", position.travelled_m / 1000, item.plan.length_m / 1000)
+        self._notify(
+            "info",
+            "Route hervat",
+            "Je nep-locatie beweegt weer verder langs de route. Controleer het in Apple Kaarten.",
+        )
+
+    def forget_route(self) -> None:
+        """Gooi de onderbroken route weg."""
+        self.interrupted = None
 
     # ------------------------------------------------------------------
     # Hulp bij het zetten
@@ -492,6 +622,8 @@ class Controller:
             raise ControllerError(
                 "Eerst moet je echte locatie teruggevraagd zijn. Sluit je iPhone aan en klik op de rode knop."
             )
+        if self.reconnecting_since is not None:
+            raise ControllerError("Even wachten: Ghost is opnieuw aan het verbinden met de iPhone.")
         if self.status is None or not self.status.ready:
             status = await self.refresh_status()
             if not status.ready:
@@ -598,7 +730,19 @@ class Controller:
         """Vraag de echte locatie terug en werk daarna timer en melding bij."""
         first_of_session = not self.safety.clean_start_done
         result = await self.safety.restore(reason)
+        self.reconnecting_since = None  # vanaf hier geldt: teruggevraagd, of "onzeker"
+        self.reconnect_problem = None
         if result.ok:
+            route = self.route
+            if reason in (Reason.CONNECTION, Reason.ERROR):
+                # De route is niet door jou gestopt maar door een storing: bewaar
+                # waar hij was, zodat je hem kunt hervatten.
+                if route is not None and not route.finished:
+                    self.interrupted = InterruptedRoute(
+                        route.plan, route.travelled_m, route.speed_kmh, self._minutes or TIMER_DEFAULT_MIN
+                    )
+            else:
+                self.interrupted = None
             self._clear_timer()
             self.connection_lost = False
             self.route = None
@@ -640,6 +784,8 @@ class Controller:
         else:
             title = "Echte locatie teruggevraagd"
         hint = DEVELOPER_MODE_REMINDER if reason in (Reason.BUTTON, Reason.TIMER, Reason.QUIT) else ""
+        if self.interrupted is not None:
+            hint = "Je route is bewaard. Klik op 'Hervat route' om verder te gaan waar hij was."
         self._notify(kind, title, text, hint)
 
     def _notify(self, kind: str, title: str, text: str, hint: str = "") -> None:
@@ -708,6 +854,9 @@ class Controller:
                 "connection_lost": self.connection_lost,
                 "clean_start_done": safety.clean_start_done,
                 "route": self._route_snapshot(),
+                "reconnecting": self._reconnecting_snapshot(),
+                "reconnects": self.reconnects,
+                "interrupted": self._interrupted_snapshot(),
             },
             "speeds": {"presets": dict(SPEED_PRESETS_KMH), "min": SPEED_MIN_KMH, "max": SPEED_MAX_KMH},
             "timer": {
@@ -725,6 +874,30 @@ class Controller:
                 "hint": self.notice.hint,
                 "at": self.notice.at,
             },
+        }
+
+    def _reconnecting_snapshot(self) -> dict[str, Any] | None:
+        if self.reconnecting_since is None:
+            return None
+        problem = self.reconnect_problem
+        return {
+            "seconds": int(max(0.0, self._monotonic() - self.reconnecting_since)),
+            "grace_s": int(RECONNECT_GRACE_S),
+            "why": uitleg(problem).titel if problem is not None else "",
+        }
+
+    def _interrupted_snapshot(self) -> dict[str, Any] | None:
+        item = self.interrupted
+        if item is None:
+            return None
+        position = item.plan.route.position_at(item.travelled_m)
+        return {
+            "mode": item.plan.mode,
+            "speed_kmh": item.speed_kmh,
+            "minutes": item.minutes,
+            "length_m": round(item.plan.length_m, 1),
+            "travelled_m": round(position.travelled_m, 1),
+            "remaining_m": round(position.remaining_m, 1),
         }
 
     def _route_snapshot(self) -> dict[str, Any] | None:

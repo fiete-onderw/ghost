@@ -85,6 +85,16 @@ a { color: var(--primary); }
 }
 
 .banner-uncertain { color: var(--ink); background: #ffb347; }
+/* Verbinding even weg: oranje, want Ghost is het zelf aan het herstellen. */
+.banner-reconnecting { color: var(--ink); background: #ffb347; }
+
+.interrupted-box {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  background: var(--info-bg);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+}
 
 @keyframes banner-pulse {
   50% { background: #d81b3a; }

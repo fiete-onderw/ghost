@@ -46,7 +46,9 @@ class FakeDevice(LocationDevice):
         if problem is None and not ios_supported(self.ios_version):
             problem = Problem.IOS_TOO_OLD
         for step_problem, field in steps:
-            failed = problem is step_problem
+            failed = problem is step_problem or (
+                step_problem is Problem.NO_DEVICE and problem is Problem.NOT_LISTED
+            )
             if field is not None:
                 setattr(status, field, not failed)
             if field == "connected" and not failed:

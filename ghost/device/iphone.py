@@ -15,12 +15,16 @@ Belangrijk om te weten:
   na clear() nog een onschuldige vraag over dezelfde verbinding. Komt daar
   antwoord op, dan is het clear-bericht in elk geval aangekomen.
 - Er kan maar één tunnel per proces bestaan, dus één iPhone tegelijk.
+- Een verbinding kan zomaar wegvallen (kabel, USB-poort, de iPhone zelf). Daarom
+  probeert elke opdracht het na een mislukking één keer opnieuw over een verse
+  verbinding, voordat hij een fout meldt. Elke herstelpoging komt in het log.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -47,12 +51,17 @@ from pymobiledevice3.services.mobile_image_mounter import (
     image_type_for_device,
 )
 
+from ghost import hostusb
 from ghost.device.base import DeviceError, DeviceStatus, LocationDevice, Problem, ios_supported
 from ghost.geo import LatLon
 
 log = logging.getLogger(__name__)
 
-TUNNEL_TIMEOUT_S = 30.0
+TUNNEL_TIMEOUT_S = 20.0
+#: De lijst met toestellen is soms een ogenblik leeg, bijvoorbeeld vlak na het
+#: insteken van de kabel. Daarom een paar keer kijken voordat Ghost "niet gevonden" zegt.
+FIND_ATTEMPTS = 3
+FIND_RETRY_S = 0.5
 SERVICE_TIMEOUT_S = 15.0
 SET_TIMEOUT_S = 10.0
 CONFIRM_TIMEOUT_S = 5.0
@@ -69,6 +78,8 @@ class IPhone(LocationDevice):
         self._dvt: Any = None
         self._sim: Any = None
         self._info: Any = None  # alleen gebruikt om na clear() een antwoord uit te lokken
+        self.reconnects = 0  #: hoe vaak een opdracht pas lukte na opnieuw verbinden
+        self._connected_at: float | None = None
 
     # ------------------------------------------------------------------
     # Status
@@ -143,16 +154,31 @@ class IPhone(LocationDevice):
         return status
 
     async def _find_usb_device(self) -> tuple[Any, int]:
-        try:
-            devices = await usbmux.list_devices()
-        except (ConnectionFailedToUsbmuxdError, MuxException, OSError) as error:
-            raise DeviceError(Problem.APPLE_SERVICE_MISSING, repr(error)) from error
-        usb_devices = [device for device in devices if device.is_usb]
-        if not usb_devices:
-            detail = "Alleen via wifi zichtbaar; Ghost werkt via de kabel." if devices else ""
-            raise DeviceError(Problem.NO_DEVICE, detail)
-        self._serial = usb_devices[0].serial
-        return usb_devices[0], len(usb_devices)
+        devices: list[Any] = []
+        for attempt in range(FIND_ATTEMPTS):
+            try:
+                devices = await usbmux.list_devices()
+            except (ConnectionFailedToUsbmuxdError, MuxException, OSError) as error:
+                raise DeviceError(Problem.APPLE_SERVICE_MISSING, repr(error)) from error
+            usb_devices = [device for device in devices if device.is_usb]
+            if usb_devices:
+                if attempt:
+                    log.info("iPhone pas gevonden bij poging %d", attempt + 1)
+                self._serial = usb_devices[0].serial
+                return usb_devices[0], len(usb_devices)
+            if attempt + 1 < FIND_ATTEMPTS:
+                await asyncio.sleep(FIND_RETRY_S)
+
+        # Niet gevonden. Vraag Windows zelf of er wel een iPhone aan de kabel hangt:
+        # dan is de kabel goed en ligt het aan de Apple-service.
+        seen = await hostusb.apple_devices_seen_by_windows_cached()
+        if seen:
+            log.warning("Windows ziet een Apple-toestel dat de Apple-service niet doorgeeft: %s", "; ".join(seen))
+            raise DeviceError(Problem.NOT_LISTED, "; ".join(seen))
+        detail = "Alleen via wifi zichtbaar; Ghost werkt via de kabel." if devices else ""
+        if seen is not None:
+            log.info("Windows ziet zelf ook geen iPhone op USB")
+        raise DeviceError(Problem.NO_DEVICE, detail)
 
     @staticmethod
     async def _is_ddi_mounted(lockdown: Any) -> bool | None:
@@ -272,6 +298,7 @@ class IPhone(LocationDevice):
             raise
 
         self._stack, self._tunnel, self._dvt, self._sim, self._info = stack, tunnel, dvt, sim, info
+        self._connected_at = time.monotonic()
         log.info("Verbonden met de locatiedienst van de iPhone")
 
     async def _open_tunnel(self, stack: AsyncExitStack) -> Any:
@@ -301,6 +328,9 @@ class IPhone(LocationDevice):
         stack, self._stack = self._stack, None
         self._tunnel = self._dvt = self._sim = self._info = None
         if stack is not None:
+            if self._connected_at is not None:
+                log.info("Verbinding gesloten na %.0f seconden", time.monotonic() - self._connected_at)
+            self._connected_at = None
             await _close_stack(stack)
 
     # ------------------------------------------------------------------
@@ -309,24 +339,54 @@ class IPhone(LocationDevice):
 
     async def set_location(self, point: LatLon) -> None:
         async with self._lock:
-            await self._connect_locked()
-            try:
-                await asyncio.wait_for(self._sim.set(point.lat, point.lon), SET_TIMEOUT_S)
-            except Exception as error:
-                log.exception("Locatie zetten mislukt")
-                await self._drop_locked()
-                raise DeviceError(Problem.CONNECTION_LOST, repr(error)) from error
+            await self._send_with_retry("Locatie zetten", lambda: self._sim.set(point.lat, point.lon))
 
     async def clear_location(self) -> bool:
         async with self._lock:
-            await self._connect_locked()
-            try:
-                await asyncio.wait_for(self._sim.clear(), SET_TIMEOUT_S)
-            except Exception as error:
-                log.exception("Verzoek om de echte locatie terug te zetten mislukt")
-                await self._drop_locked()
-                raise DeviceError(Problem.CONNECTION_LOST, repr(error)) from error
+            await self._send_with_retry("Echte locatie terugvragen", lambda: self._sim.clear())
             return await self._confirm_delivery()
+
+    async def _send_with_retry(self, what: str, send: Any) -> None:
+        """Stuur een opdracht. Mislukt het, dan één keer opnieuw over een verse verbinding.
+
+        Een verbinding kan stilletjes dood zijn gegaan sinds de vorige opdracht.
+        Dat merk je pas als je hem gebruikt. In plaats van meteen op te geven,
+        bouwt Ghost dan een nieuwe verbinding op en probeert het nog één keer.
+        """
+        was_connected = self._is_connected()
+        try:
+            await self._connect_locked()
+            await asyncio.wait_for(send(), SET_TIMEOUT_S)
+            return
+        except DeviceError as error:
+            # Verbinden zelf lukte niet. Was er geen verbinding, dan is opnieuw proberen zinloos.
+            if not was_connected:
+                raise
+            first_error: Exception = error
+        except Exception as error:
+            first_error = error
+        log.warning("%s mislukt (%r); nieuwe poging over een verse verbinding", what, first_error)
+        await self._drop_locked()
+
+        started = time.monotonic()
+        try:
+            await self._connect_locked()
+            await asyncio.wait_for(send(), SET_TIMEOUT_S)
+        except DeviceError:
+            log.error("%s: opnieuw verbinden mislukt", what)
+            await self._drop_locked()
+            raise
+        except Exception as error:
+            log.exception("%s mislukt, ook over een verse verbinding", what)
+            await self._drop_locked()
+            raise DeviceError(Problem.CONNECTION_LOST, repr(error)) from error
+        self.reconnects += 1
+        log.warning(
+            "%s gelukt na opnieuw verbinden (%.1f s; herstel nummer %d deze sessie)",
+            what,
+            time.monotonic() - started,
+            self.reconnects,
+        )
 
     async def _confirm_delivery(self) -> bool:
         """Lok een antwoord uit over dezelfde verbinding als het clear-bericht.

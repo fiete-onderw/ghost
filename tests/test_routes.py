@@ -2,7 +2,7 @@
 
 import pytest
 
-from ghost.controller import MAX_STEP_S, RESTORE_RETRY_S, Controller, ControllerError
+from ghost.controller import MAX_STEP_S, RECONNECT_GRACE_S, RESTORE_RETRY_S, Controller, ControllerError
 from ghost.device.base import Problem
 from ghost.device.fake import FakeDevice
 from ghost.geo import LatLon, haversine_m
@@ -256,37 +256,116 @@ async def test_timer_stopt_ook_een_route():
     assert "Auto-stop" in beeld["notice"]["title"]
 
 
-async def test_kabel_eruit_tijdens_een_route_stopt_het_bewegen_en_ruimt_op_zodra_het_kan():
+async def test_hapering_tijdens_een_route_wordt_hersteld_en_de_route_loopt_door():
+    """Het probleem uit de praktijk: één mislukt punt gooide de hele route weg. Nu niet meer."""
     controller, toestel, klok = await regisseur()
     plan = await controller.plan_route([A, C], "line")
-    await controller.start_route(plan.id, 36.0, 30)
+    await controller.start_route(plan.id, 3.6, 30)  # 1 meter per seconde
+    await loop(controller, klok, 5)
+    voor = controller.snapshot()["simulation"]["route"]["travelled_m"]
+
+    toestel.fail_next = Problem.CONNECTION_LOST  # één punt komt niet aan
+    await loop(controller, klok, 1)
+    beeld = controller.snapshot()
+    assert beeld["simulation"]["reconnecting"] is not None
+    assert beeld["simulation"]["route"] is not None  # de route is er nog
+    assert ("clear", None) not in toestel.history[1:]
+
+    await loop(controller, klok, 3)
+    beeld = controller.snapshot()
+    assert beeld["simulation"]["reconnecting"] is None
+    assert beeld["simulation"]["reconnects"] == 1
+    assert beeld["simulation"]["route"]["travelled_m"] > voor  # en hij beweegt weer
+    assert beeld["simulation"]["connection_lost"] is False
+    assert "route gaat verder" in beeld["notice"]["text"].lower() or beeld["notice"]["kind"] == "ok"
+
+
+async def test_route_springt_niet_vooruit_na_een_hapering():
+    controller, toestel, klok = await regisseur()
+    plan = await controller.plan_route([A, C], "line")
+    await controller.start_route(plan.id, 3.6, 30)
+    await loop(controller, klok, 5)
+    voor = controller.snapshot()["simulation"]["route"]["travelled_m"]
+    toestel.unplug()
+    await loop(controller, klok, 15)  # een kwart minuut geen verbinding
+    toestel.plug_in()
+    await loop(controller, klok, 3)
+    na = controller.snapshot()["simulation"]["route"]["travelled_m"]
+    assert controller.snapshot()["simulation"]["reconnecting"] is None
+    assert na - voor < 8  # de tijd zonder verbinding telt niet als afgelegd
+
+
+async def test_kabel_lang_eruit_tijdens_een_route_stopt_het_bewegen_en_ruimt_op_zodra_het_kan():
+    controller, toestel, klok = await regisseur()
+    plan = await controller.plan_route([A, C], "line")
+    await controller.start_route(plan.id, 3.6, 30)
     await loop(controller, klok, 2)
     toestel.unplug()
     zetten = len(toestel.history)
-    await loop(controller, klok, 3)
+    await loop(controller, klok, int(RECONNECT_GRACE_S) + 3)
     assert controller.snapshot()["simulation"]["connection_lost"] is True
     assert len(toestel.history) == zetten  # geen nieuwe punten naar een iPhone die er niet is
 
     toestel.plug_in()
     klok.vooruit(RESTORE_RETRY_S + 1)
     await controller.tick()
-    assert toestel.location is None
-    assert controller.snapshot()["simulation"]["route"] is None
-
-
-async def test_mislukt_punt_onderweg_vraagt_de_echte_locatie_terug_en_stopt_de_route():
-    controller, toestel, klok = await regisseur()
-    plan = await controller.plan_route([A, C], "line")
-    await controller.start_route(plan.id, 36.0, 30)
-    await loop(controller, klok, 2)
-    toestel.fail_next = Problem.CONNECTION_LOST
-    await loop(controller, klok, 1)
     beeld = controller.snapshot()
     assert toestel.location is None
-    assert toestel.history[-1] == ("clear", None)
-    assert beeld["simulation"]["active"] is False
     assert beeld["simulation"]["route"] is None
-    assert beeld["notice"]["kind"] == "error"
+    # De route is niet weg: je kunt hem hervatten vanaf waar hij was.
+    assert beeld["simulation"]["interrupted"] is not None
+    assert beeld["simulation"]["interrupted"]["travelled_m"] > 0
+    assert "Hervat route" in beeld["notice"]["hint"]
+
+
+async def test_onderbroken_route_hervatten_gaat_verder_waar_hij_was():
+    controller, toestel, klok = await regisseur()
+    plan = await controller.plan_route([A, C], "line")
+    await controller.start_route(plan.id, 3.6, 60)
+    await loop(controller, klok, 10)
+    toestel.unplug()
+    await loop(controller, klok, int(RECONNECT_GRACE_S) + 3)
+    toestel.plug_in()
+    klok.vooruit(RESTORE_RETRY_S + 1)
+    await controller.tick()
+    onderbroken = controller.snapshot()["simulation"]["interrupted"]
+    await controller.refresh_status()
+
+    await controller.continue_route()
+    beeld = controller.snapshot()
+    assert beeld["simulation"]["interrupted"] is None
+    assert beeld["simulation"]["active"] is True
+    assert beeld["simulation"]["minutes"] == 60  # dezelfde timer als eerst
+    assert beeld["simulation"]["route"]["travelled_m"] == pytest.approx(onderbroken["travelled_m"], abs=0.2)
+    assert haversine_m(toestel.location, A) == pytest.approx(onderbroken["travelled_m"], abs=0.5)
+    await loop(controller, klok, 5)
+    assert controller.snapshot()["simulation"]["route"]["travelled_m"] > onderbroken["travelled_m"]
+
+
+async def test_rode_knop_vergeet_een_onderbroken_route():
+    controller, toestel, klok = await regisseur()
+    plan = await controller.plan_route([A, C], "line")
+    await controller.start_route(plan.id, 3.6, 30)
+    await loop(controller, klok, 3)
+    toestel.unplug()
+    await loop(controller, klok, int(RECONNECT_GRACE_S) + 3)
+    toestel.plug_in()
+    klok.vooruit(RESTORE_RETRY_S + 1)
+    await controller.tick()
+    assert controller.snapshot()["simulation"]["interrupted"] is not None
+    await controller.stop()
+    assert controller.snapshot()["simulation"]["interrupted"] is None
+    with pytest.raises(ControllerError):
+        await controller.continue_route()
+
+
+async def test_zelf_gestopte_route_wordt_niet_als_onderbroken_bewaard():
+    controller, toestel, klok = await regisseur()
+    plan = await controller.plan_route([A, C], "line")
+    await controller.start_route(plan.id, 3.6, 30)
+    await loop(controller, klok, 3)
+    await controller.stop()
+    assert controller.snapshot()["simulation"]["interrupted"] is None
 
 
 async def test_vaste_plek_zetten_vervangt_een_lopende_route():

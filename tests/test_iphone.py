@@ -253,3 +253,115 @@ async def test_verbinding_leeft_tot_de_tunnel_wegvalt(toestel):
     assert toestel.connection_alive() is True
     tunnel.rsd = None  # dit doet pymobiledevice3 zelf als de kabel eruit gaat
     assert toestel.connection_alive() is False
+
+
+# --- zelfherstel en "Windows ziet hem wel" -----------------------------------
+
+
+@pytest.fixture(autouse=True)
+def geen_wachttijd_bij_zoeken(monkeypatch):
+    monkeypatch.setattr(iphone_module, "FIND_RETRY_S", 0)
+
+    async def windows_weet_het_niet():
+        return None
+
+    monkeypatch.setattr(iphone_module.hostusb, "apple_devices_seen_by_windows_cached", windows_weet_het_niet)
+
+
+async def test_iphone_die_even_niet_in_de_lijst_staat_wordt_bij_een_volgende_poging_gevonden(toestel, monkeypatch):
+    antwoorden = [[], [nep_usb()]]
+
+    async def list_devices():
+        return antwoorden.pop(0)
+
+    monkeypatch.setattr(iphone_module.usbmux, "list_devices", list_devices)
+    status = await toestel._probe()
+    assert status.problem is None
+    assert status.connected is True
+
+
+async def test_windows_ziet_de_iphone_maar_de_apple_service_niet(toestel, monkeypatch):
+    toestel.state.devices = []
+
+    async def windows_ziet_hem():
+        return ["Apple Mobile Device USB Composite Device | USB | OK"]
+
+    monkeypatch.setattr(iphone_module.hostusb, "apple_devices_seen_by_windows_cached", windows_ziet_hem)
+    status = await toestel._probe()
+    assert status.problem is Problem.NOT_LISTED
+    assert status.apple_service is True
+    assert status.connected is False
+
+
+async def test_windows_ziet_ook_niets_dan_is_het_gewoon_geen_iphone(toestel, monkeypatch):
+    toestel.state.devices = []
+
+    async def windows_ziet_niets():
+        return []
+
+    monkeypatch.setattr(iphone_module.hostusb, "apple_devices_seen_by_windows_cached", windows_ziet_niets)
+    status = await toestel._probe()
+    assert status.problem is Problem.NO_DEVICE
+
+
+async def test_dode_verbinding_wordt_bij_het_zetten_vanzelf_vervangen(toestel):
+    """De verbinding lijkt goed maar is stuk: de eerste poging mislukt, de tweede lukt over een verse verbinding."""
+    verbindingen = []
+
+    async def connect_locked():
+        if toestel._sim is None:
+            sim = NepSimulatie()
+            if not verbindingen:  # alleen de eerste verbinding is stuk
+
+                async def kapot(lat, lon):
+                    raise ConnectionResetError("verbinding weg")
+
+                sim.set = kapot
+            verbindingen.append(sim)
+            toestel._tunnel, toestel._sim = NepTunnel(), sim
+            toestel._tunnel.rsd = object()
+
+    toestel._connect_locked = connect_locked
+    await toestel.connect()
+    await toestel.set_location(LatLon(52.0, 5.0))
+    assert len(verbindingen) == 2
+    assert verbindingen[1].calls == [("set", 52.0, 5.0)]
+    assert toestel.reconnects == 1
+
+
+async def test_dode_verbinding_wordt_ook_bij_het_terugvragen_vervangen(toestel):
+    """Het belangrijkste moment om niet op te geven: de echte locatie terugvragen."""
+    verbindingen = []
+
+    async def connect_locked():
+        if toestel._sim is None:
+            sim = NepSimulatie()
+            if not verbindingen:
+
+                async def kapot():
+                    raise ConnectionResetError("verbinding weg")
+
+                sim.clear = kapot
+            verbindingen.append(sim)
+            toestel._tunnel, toestel._sim = NepTunnel(), sim
+            toestel._tunnel.rsd = object()
+
+    toestel._connect_locked = connect_locked
+    await toestel.connect()
+    await toestel.clear_location()
+    assert verbindingen[1].calls == [("clear",)]
+    assert toestel.reconnects == 1
+
+
+async def test_zonder_iphone_wordt_er_niet_eindeloos_opnieuw_geprobeerd(toestel):
+    pogingen = []
+
+    async def connect_locked():
+        pogingen.append(1)
+        raise DeviceError(Problem.NO_DEVICE)
+
+    toestel._connect_locked = connect_locked
+    with pytest.raises(DeviceError) as fout:
+        await toestel.set_location(LatLon(1, 2))
+    assert fout.value.problem is Problem.NO_DEVICE
+    assert len(pogingen) == 1

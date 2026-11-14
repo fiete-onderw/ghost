@@ -118,6 +118,17 @@
           </div>
         </div>
 
+        <!-- Zichtbaar als een route is afgebroken doordat de verbinding wegviel. -->
+        <div id="interrupted-box" class="interrupted-box" hidden>
+          <p id="interrupted-text" class="active-line"></p>
+          <div class="row wrap">
+            <button id="interrupted-continue" class="btn btn-primary btn-small" type="button">Hervat route</button>
+            <button id="interrupted-forget" class="btn btn-small" type="button">Vergeet deze route</button>
+          </div>
+          <p id="interrupted-hint" class="muted" hidden></p>
+          <p id="interrupted-error" class="field-error" hidden></p>
+        </div>
+
         <!-- De twee manieren -->
         <div class="tabs" role="tablist" aria-label="Soort nep-locatie">
           <button id="tab-fixed" class="tab" type="button" role="tab" aria-selected="true" aria-controls="panel-fixed">Vaste plek</button>

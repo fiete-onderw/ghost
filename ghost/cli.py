@@ -316,6 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     commands.add_parser("clear", help="vraag de echte locatie terug")
+    commands.add_parser("diagnose", help="maak een rapport om een probleem te laten uitzoeken (zie diagnose.bat)")
 
     web_parser = commands.add_parser("web", help="start de webpagina in je browser (de gewone manier)")
     web_parser.add_argument(
@@ -364,6 +365,11 @@ async def run(args: argparse.Namespace, device: LocationDevice, log_path: Path) 
                 return await cmd_set(device, args, log_path, args.debug)
             case "clear":
                 return await cmd_clear(device, log_path)
+            case "diagnose":
+                from ghost.diagnose import run_diagnose
+
+                await run_diagnose(device, log_path, say)
+                return EXIT_OK
         return EXIT_USAGE
     except DeviceError as error:
         log.error("Commando %s mislukt: %s", args.command, error)

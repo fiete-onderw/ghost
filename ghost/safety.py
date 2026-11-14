@@ -105,11 +105,20 @@ class SafetyManager:
     # Zetten
     # ------------------------------------------------------------------
 
-    async def set_location(self, point: LatLon) -> None:
-        """Zet een nep-locatie. Mislukt het, dan wordt meteen de echte teruggevraagd."""
+    async def set_location(self, point: LatLon, *, restore_on_failure: bool = True) -> None:
+        """Zet een nep-locatie. Mislukt het, dan wordt meteen de echte teruggevraagd.
+
+        `restore_on_failure=False` is bedoeld voor het VERPLAATSEN van een
+        nep-locatie die al actief is (een volgende stap van een route, of
+        dezelfde plek opnieuw zetten na een haperende verbinding). Mislukt dat,
+        dan staat de iPhone nog steeds op een nep-locatie en blijft `point`
+        zoals het was. De aanroeper beslist dan: opnieuw verbinden of stoppen.
+        Is er nog niets actief, dan wordt er altijd opgeruimd.
+        """
         async with self._lock:
             if self.closing:
                 raise ClosingError
+            was_uncertain = self.uncertain
             # Eerst opschrijven, dan pas doen. Valt Ghost hierna weg, dan weet
             # de volgende start dat er mogelijk nog een nep-locatie actief is.
             self.uncertain = True
@@ -117,9 +126,13 @@ class SafetyManager:
             try:
                 await self.device.set_location(point)
             except Exception:
-                # We weten niet of de opdracht is aangekomen. Bij twijfel: opruimen.
-                log.warning("Nep-locatie zetten mislukt; de echte locatie wordt voor de zekerheid teruggevraagd")
-                await self._restore_locked(Reason.ERROR)
+                if restore_on_failure or self.point is None:
+                    # We weten niet of de opdracht is aangekomen. Bij twijfel: opruimen.
+                    log.warning("Nep-locatie zetten mislukt; de echte locatie wordt voor de zekerheid teruggevraagd")
+                    await self._restore_locked(Reason.ERROR)
+                else:
+                    log.warning("Nep-locatie verplaatsen mislukt; de vorige nep-locatie blijft actief")
+                    self.uncertain = was_uncertain
                 raise
             self.point = point
             self.uncertain = False

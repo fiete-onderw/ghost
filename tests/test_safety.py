@@ -274,3 +274,28 @@ async def test_verplaatsen_houdt_de_nieuwe_plek_bij():
     await safety.set_location(AMSTERDAM)
     assert safety.point == AMSTERDAM
     assert toestel.location == AMSTERDAM
+
+
+async def test_verplaatsen_dat_mislukt_laat_de_vorige_nep_locatie_staan():
+    """Bij een route of bij opnieuw verbinden: één mislukte stap is geen reden om op te ruimen."""
+    toestel = FakeDevice()
+    safety = SafetyManager(toestel)
+    eerste, tweede = LatLon(52.0, 5.0), LatLon(52.001, 5.0)
+    await safety.set_location(eerste)
+    toestel.fail_next = Problem.CONNECTION_LOST
+    with pytest.raises(DeviceError):
+        await safety.set_location(tweede, restore_on_failure=False)
+    assert safety.point == eerste
+    assert safety.uncertain is False
+    assert ("clear", None) not in toestel.history
+
+
+async def test_eerste_keer_zetten_ruimt_bij_een_fout_altijd_op():
+    """Is er nog niets actief, dan wordt er hoe dan ook opgeruimd."""
+    toestel = FakeDevice()
+    safety = SafetyManager(toestel)
+    toestel.fail_next = Problem.CONNECTION_LOST
+    with pytest.raises(DeviceError):
+        await safety.set_location(LatLon(52.0, 5.0), restore_on_failure=False)
+    assert safety.point is None
+    assert toestel.history == [("clear", None)]

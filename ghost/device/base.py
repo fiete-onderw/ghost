@@ -18,6 +18,7 @@ class Problem(Enum):
 
     APPLE_SERVICE_MISSING = "apple_service_missing"
     NO_DEVICE = "no_device"
+    NOT_LISTED = "not_listed"  #: Windows ziet de iPhone, de Apple-service geeft hem niet door
     DEVICE_LOCKED = "device_locked"
     NOT_TRUSTED = "not_trusted"
     IOS_TOO_OLD = "ios_too_old"

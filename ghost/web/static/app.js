@@ -58,6 +58,7 @@
   let planError = "";
   let planTimer = null;
   let routeBusy = false;
+  let interruptedBusy = false; // de knop "Hervat route" is ingedrukt
   let drawnRouteId = null; // welke lopende route er op de kaart getekend is
   let speedDragging = false;
 
@@ -263,6 +264,9 @@
     if (sim.uncertain) {
       return "uncertain";
     }
+    if (sim.active && sim.reconnecting) {
+      return "reconnecting"; // verbinding even weg; Ghost herstelt het zelf
+    }
     return sim.active ? "active" : "none";
   }
 
@@ -274,6 +278,9 @@
     }
     if (mode === "lost" || mode === "uncertain") {
       return "Eerst moet je echte locatie teruggevraagd zijn (rode knop).";
+    }
+    if (mode === "reconnecting") {
+      return "Even wachten: Ghost verbindt opnieuw met je iPhone.";
     }
     if (!state.device.ready) {
       return "Je iPhone is nog niet klaar. Kijk bij '1. Je iPhone'.";
@@ -292,6 +299,7 @@
     renderNotice();
     renderDevice();
     renderActive();
+    renderInterrupted();
     renderFixed();
     renderRoute();
     renderSearch();
@@ -329,6 +337,19 @@
       }
       $("banner-text").textContent = parts.join(" · ");
       document.title = "● NEP-LOCATIE ACTIEF · Ghost";
+    } else if (mode === "reconnecting") {
+      $("banner-title").textContent = "VERBINDING EVEN WEG · GHOST VERBINDT OPNIEUW";
+      const info = sim.reconnecting;
+      const parts = [
+        "Je iPhone staat nog op de nep-locatie (" + sim.text + ").",
+        "Controleer de kabel en ontgrendel de iPhone.",
+        "Al " + info.seconds + " van de " + info.grace_s + " seconden geprobeerd.",
+      ];
+      if (info.why) {
+        parts.push("Reden: " + info.why + ".");
+      }
+      $("banner-text").textContent = parts.join(" ");
+      document.title = "⚠ VERBINDING EVEN WEG · Ghost";
     } else if (mode === "lost") {
       $("banner-title").textContent = sim.connection_lost
         ? "VERBINDING MET DE IPHONE WEG"
@@ -356,6 +377,9 @@
     line.className = "stop-state";
     if (mode === "active") {
       line.textContent = "Er is nu een nep-locatie actief.";
+      line.classList.add("is-active");
+    } else if (mode === "reconnecting") {
+      line.textContent = "Ghost verbindt opnieuw. Stoppen mag altijd.";
       line.classList.add("is-active");
     } else if (mode !== "none") {
       line.textContent = "Klik hier zodra je iPhone weer is aangesloten.";
@@ -482,7 +506,8 @@
   function renderActive() {
     const sim = state.simulation;
     const route = sim.route;
-    const active = simulationMode() === "active";
+    const mode = simulationMode();
+    const active = mode === "active" || mode === "reconnecting";
     $("active-box").hidden = !active;
     if (!active) {
       $("active-box").dataset.key = "";
@@ -498,6 +523,8 @@
     let title = "Nep-locatie actief op";
     if (route && route.finished) {
       title = "Route klaar. Nep-locatie staat op";
+    } else if (mode === "reconnecting") {
+      title = route ? "Route wacht op de verbinding bij" : "Nep-locatie staat (verbinding even weg) op";
     } else if (route && route.paused) {
       title = "Route op pauze bij";
     } else if (route) {
@@ -526,6 +553,49 @@
         $("live-speed").value = String(Math.round(route.speed_kmh));
         $("live-speed-out").textContent = Math.round(route.speed_kmh) + " km/u";
       }
+    }
+  }
+
+  // Een route die door een weggevallen verbinding is afgebroken: bied aan om verder te gaan.
+  function renderInterrupted() {
+    const item = state.simulation.interrupted;
+    const box = $("interrupted-box");
+    box.hidden = !item || state.simulation.active;
+    if (box.hidden) {
+      return;
+    }
+    $("interrupted-text").textContent =
+      "Je route is afgebroken doordat de verbinding wegviel, na " +
+      formatDistance(item.travelled_m) +
+      " van de " +
+      formatDistance(item.length_m) +
+      ". Je echte locatie is teruggevraagd.";
+    const reason = blockReason();
+    $("interrupted-continue").disabled = interruptedBusy || reason !== "";
+    $("interrupted-continue").textContent = interruptedBusy ? "Bezig…" : "Hervat route";
+    $("interrupted-hint").textContent = reason;
+    $("interrupted-hint").hidden = reason === "";
+  }
+
+  async function continueRoute() {
+    interruptedBusy = true;
+    setError("interrupted-error", "");
+    renderInterrupted();
+    try {
+      await api("/api/route/continue", {});
+    } catch (error) {
+      setError("interrupted-error", error.message);
+    } finally {
+      interruptedBusy = false;
+      renderInterrupted();
+    }
+  }
+
+  async function forgetRoute() {
+    try {
+      await api("/api/route/forget", {});
+    } catch (error) {
+      // niets: de pagina toont bij de volgende verversing de echte stand
     }
   }
 
@@ -1242,6 +1312,8 @@
   $("coords-form").addEventListener("submit", showCoords);
   $("check").addEventListener("click", check);
   $("extend").addEventListener("click", extend);
+  $("interrupted-continue").addEventListener("click", continueRoute);
+  $("interrupted-forget").addEventListener("click", forgetRoute);
   $("quit").addEventListener("click", quit);
   $("notice-close").addEventListener("click", () => {
     if (state && state.notice) {

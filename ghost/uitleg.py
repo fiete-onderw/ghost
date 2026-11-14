@@ -65,8 +65,23 @@ _UITLEG: dict[Problem, Uitleg] = {
         "Er is geen iPhone via de kabel zichtbaar.",
         (
             "Sluit de iPhone aan met een USB-kabel die ook data doorgeeft (niet alleen opladen).",
-            "Ontgrendel de iPhone.",
+            "Ontgrendel de iPhone. Vraagt hij 'Vertrouw je deze computer?', tik dan op 'Vertrouw'.",
+            "Steek de kabel rechtstreeks in de laptop, niet in een USB-hub of beeldscherm.",
             "Probeer een andere USB-poort of kabel.",
+            "Ziet Windows de iPhone wel (bijvoorbeeld in Verkenner) maar Ghost niet? Open iTunes. "
+            "Ziet iTunes hem ook niet, herstart dan je laptop met de iPhone aangesloten.",
+        ),
+    ),
+    Problem.NOT_LISTED: Uitleg(
+        "Windows ziet je iPhone, maar de Apple-service geeft hem niet door",
+        "De kabel is in orde. Het onderdeel van iTunes dat met de iPhone praat, herkent hem (nog) niet.",
+        (
+            "Ontgrendel de iPhone. Vraagt hij 'Vertrouw je deze computer?', tik dan op 'Vertrouw'.",
+            "Haal de kabel eruit, wacht 5 seconden en steek hem er weer in.",
+            "Open iTunes en kijk of je iPhone daar verschijnt (klein telefoon-icoon linksboven).",
+            "Ziet iTunes hem ook niet? Herstart je laptop met de iPhone aangesloten.",
+            f"Helpt dat niet? Installeer iTunes opnieuw van de website van Apple: {ITUNES_URL} "
+            "(niet de versie uit de Microsoft Store).",
         ),
     ),
     Problem.DEVICE_LOCKED: Uitleg(
@@ -150,12 +165,12 @@ _UITLEG: dict[Problem, Uitleg] = {
         "De verbinding met de iPhone is weggevallen",
         "Het is niet zeker of de opdracht is aangekomen.",
         (
-            "Controleer de kabel en ontgrendel de iPhone.",
+            "Controleer de kabel en ontgrendel de iPhone. Steek de kabel rechtstreeks in de laptop.",
             f"Voer uit:  {RUN} clear   om de echte locatie terug te vragen.",
             "Kijk in Apple Kaarten of je echte locatie weer klopt.",
         ),
         web_stappen=(
-            "Controleer de kabel en ontgrendel de iPhone.",
+            "Controleer de kabel en ontgrendel de iPhone. Steek de kabel rechtstreeks in de laptop.",
             "Klik op de rode knop 'Stop - echte locatie terug'.",
             "Kijk in Apple Kaarten of je echte locatie weer klopt.",
         ),

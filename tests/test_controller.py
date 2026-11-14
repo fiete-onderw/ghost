@@ -6,7 +6,14 @@ import time
 import pytest
 
 from ghost import paths
-from ghost.controller import RESTORE_RETRY_S, STATUS_RETRY_S, TIMER_MAX_MIN, Controller, ControllerError
+from ghost.controller import (
+    RECONNECT_GRACE_S,
+    RESTORE_RETRY_S,
+    STATUS_RETRY_S,
+    TIMER_MAX_MIN,
+    Controller,
+    ControllerError,
+)
 from ghost.device.base import Problem
 from ghost.device.fake import FakeDevice
 from ghost.geo import LatLon
@@ -215,7 +222,8 @@ async def test_mislukt_zetten_meldt_dat_de_echte_locatie_is_teruggevraagd():
 # --- verbinding weg ------------------------------------------------------
 
 
-async def test_kabel_eruit_tijdens_nep_locatie_waarschuwt_hard_en_ruimt_op_zodra_het_kan():
+async def test_kabel_kort_eruit_wordt_vanzelf_hersteld_en_de_nep_locatie_blijft():
+    """Een hapering van een paar seconden mag geen reden zijn om alles op te geven."""
     controller, toestel, klok = regisseur()
     await controller.refresh_status()
     await controller.set_fixed(PARIJS, 30)
@@ -223,10 +231,43 @@ async def test_kabel_eruit_tijdens_nep_locatie_waarschuwt_hard_en_ruimt_op_zodra
     toestel.unplug()
     await controller.tick()
     beeld = controller.snapshot()
+    assert beeld["simulation"]["reconnecting"] is not None
+    assert beeld["simulation"]["connection_lost"] is False  # nog geen harde waarschuwing
+    assert beeld["simulation"]["active"] is True
+    assert beeld["notice"]["kind"] == "warn"
+    assert "Geen iPhone gevonden" in beeld["simulation"]["reconnecting"]["why"]
+
+    toestel.plug_in()
+    klok.vooruit(5)
+    await controller.tick()
+    beeld = controller.snapshot()
+    assert beeld["simulation"]["reconnecting"] is None
+    assert beeld["simulation"]["reconnects"] == 1
+    assert beeld["simulation"]["active"] is True
+    assert toestel.location == PARIJS
+    assert toestel.history[-1] == ("set", PARIJS)  # opnieuw gezet om zeker te zijn
+    assert ("clear", None) not in toestel.history[1:]  # er is niets opgegeven
+    assert beeld["notice"]["title"] == "Verbinding hersteld"
+    assert "5 seconden" in beeld["notice"]["text"]
+
+
+async def test_kabel_lang_eruit_waarschuwt_hard_en_ruimt_op_zodra_het_kan():
+    controller, toestel, klok = regisseur()
+    await controller.refresh_status()
+    await controller.set_fixed(PARIJS, 30)
+
+    toestel.unplug()
+    await controller.tick()
+    klok.vooruit(RECONNECT_GRACE_S + 1)
+    await controller.tick()  # de laatste poging: nu geeft Ghost het opnieuw verbinden op
+    await controller.tick()  # en begint met proberen op te ruimen
+    beeld = controller.snapshot()
     assert beeld["simulation"]["connection_lost"] is True
+    assert beeld["simulation"]["reconnecting"] is None
     assert beeld["simulation"]["active"] is True  # voor zover we weten staat de iPhone nog in Parijs
     assert toestel.location == PARIJS
     assert beeld["device"]["problem"]["code"] == "no_device"
+    assert beeld["notice"]["kind"] == "error"
 
     # Zolang de kabel eruit is, blijft het zo.
     klok.vooruit(RESTORE_RETRY_S + 1)
@@ -243,6 +284,58 @@ async def test_kabel_eruit_tijdens_nep_locatie_waarschuwt_hard_en_ruimt_op_zodra
     assert beeld["simulation"]["active"] is False
     assert beeld["simulation"]["uncertain"] is False
     assert "Verbinding terug" in beeld["notice"]["title"]
+
+
+async def test_na_drie_herstelde_haperingen_komt_er_advies_over_de_kabel():
+    controller, toestel, klok = regisseur()
+    await controller.refresh_status()
+    await controller.set_fixed(PARIJS, 30)
+    for _ in range(3):
+        toestel.unplug()
+        await controller.tick()
+        toestel.plug_in()
+        klok.vooruit(3)
+        await controller.tick()
+    beeld = controller.snapshot()
+    assert beeld["simulation"]["reconnects"] == 3
+    assert "andere kabel" in beeld["notice"]["hint"]
+
+
+async def test_stopknop_werkt_ook_tijdens_opnieuw_verbinden():
+    controller, toestel, klok = regisseur()
+    await controller.refresh_status()
+    await controller.set_fixed(PARIJS, 30)
+    toestel.unplug()
+    await controller.tick()
+    toestel.plug_in()
+    resultaat = await controller.stop()
+    assert resultaat.ok
+    assert toestel.location is None
+    assert controller.snapshot()["simulation"]["reconnecting"] is None
+
+
+async def test_laptop_blijft_wakker_zolang_er_iets_actief_is():
+    aanroepen = []
+    toestel = FakeDevice()
+    klok = Klok()
+    from ghost.power import ES_CONTINUOUS, ES_SYSTEM_REQUIRED, KeepAwake
+
+    controller = Controller(
+        SafetyManager(toestel, clock=lambda: klok.wall),
+        keep_awake=KeepAwake(setter=aanroepen.append),
+        clock=lambda: klok.wall,
+        monotonic=lambda: klok.mono,
+    )
+    await controller.refresh_status()
+    await controller.tick()
+    assert aanroepen == []  # niets actief: Windows mag gewoon slapen
+    await controller.set_fixed(PARIJS, 30)
+    await controller.tick()
+    await controller.tick()
+    assert aanroepen == [ES_CONTINUOUS | ES_SYSTEM_REQUIRED]  # één keer vragen is genoeg
+    await controller.stop()
+    await controller.tick()
+    assert aanroepen[-1] == ES_CONTINUOUS  # weer het gewone gedrag
 
 
 async def test_tijdens_verbinding_weg_kan_er_geen_nieuwe_plek_gezet_worden():

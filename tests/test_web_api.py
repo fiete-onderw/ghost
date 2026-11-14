@@ -517,3 +517,28 @@ async def test_fout_van_de_zoekdienst_wordt_gewone_taal(ghost):
     antwoord = await ghost.client.post("/api/search", json={"q": "Dam"})
     assert antwoord.status_code == 502
     assert "niet bereikbaar" in antwoord.json()["error"]
+
+
+async def test_onderbroken_route_hervatten_en_vergeten_via_de_pagina(ghost):
+    from ghost.controller import InterruptedRoute
+
+    assert (await ghost.client.post("/api/route/continue")).status_code == 409  # er is niets onderbroken
+
+    plan = (await ghost.client.post("/api/route/plan", json=LIJN)).json()["plan"]
+    echt_plan = ghost.controller._plans[plan["id"]]
+    ghost.controller.interrupted = InterruptedRoute(echt_plan, 100.0, 5.0, 15)
+    beeld = (await ghost.client.get("/api/state")).json()["state"]["simulation"]
+    assert beeld["interrupted"]["travelled_m"] == 100.0
+
+    antwoord = await ghost.client.post("/api/route/continue")
+    assert antwoord.status_code == 200
+    beeld = antwoord.json()["state"]["simulation"]
+    assert beeld["active"] is True
+    assert beeld["interrupted"] is None
+    assert beeld["route"]["travelled_m"] == 100.0
+    assert beeld["minutes"] == 15
+
+    await ghost.client.post("/api/stop")
+    ghost.controller.interrupted = InterruptedRoute(echt_plan, 50.0, 5.0, 15)
+    antwoord = await ghost.client.post("/api/route/forget")
+    assert antwoord.json()["state"]["simulation"]["interrupted"] is None

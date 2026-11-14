@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-BATS = [ROOT / "start.bat", ROOT / "start-demo.bat"]
+BATS = [ROOT / "start.bat", ROOT / "start-demo.bat", ROOT / "diagnose.bat"]
 PS1 = ROOT / "scripts" / "installeer-uv.ps1"
 WINDOWS_FILES = [*BATS, PS1]
 

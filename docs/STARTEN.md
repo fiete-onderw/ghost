@@ -145,12 +145,14 @@ op te ruimen. Daarom ruimt Ghost zelf op, op al deze momenten:
 | Ghost start | Vraagt eerst je echte locatie terug (schone start). |
 | Rode knop of Esc | Vraagt je echte locatie terug. |
 | De timer loopt af | Vraagt je echte locatie terug. Dat geldt ook midden in een route. |
-| Een punt van een route komt niet aan | Stopt de route en vraagt je echte locatie terug. |
+| Een opdracht aan de iPhone mislukt | Bouwt een verse verbinding op en probeert het nog één keer, voordat er een fout komt. |
+| De verbinding hapert terwijl er iets actief is | Oranje balk "VERBINDING EVEN WEG". Ghost verbindt een halve minuut lang zelf opnieuw. Lukt dat, dan blijft je nep-locatie staan en loopt een route gewoon door. |
 | Knop "Ghost afsluiten" | Vraagt je echte locatie terug en stopt dan. |
 | Ctrl+C in het zwarte venster | Vraagt je echte locatie terug en stopt dan. |
 | Je sluit het zwarte venster met het kruisje | Vraagt je echte locatie terug in de paar seconden die Windows geeft. |
 | Er gaat iets onverwachts mis in Ghost | Vraagt je echte locatie terug. |
-| De kabel gaat eruit terwijl er iets actief is | Rode balk "VERBINDING MET DE IPHONE WEG". Zodra de kabel er weer in zit, vraagt Ghost vanzelf je echte locatie terug. |
+| De verbinding blijft langer dan een halve minuut weg | Rode balk "VERBINDING MET DE IPHONE WEG". Zodra de kabel er weer in zit, vraagt Ghost vanzelf je echte locatie terug. Liep er een route, dan bewaart Ghost waar hij was: met **Hervat route** ga je verder. |
+| Er is iets actief en je doet even niets | Vraagt Windows om niet vanzelf in slaap te vallen. (Dichtklappen of zelf "Slaapstand" kiezen laat de laptop nog wel slapen.) |
 | Ghost was de vorige keer niet netjes afgesloten | Onthoudt dat, en vraagt bij de volgende start meteen je echte locatie terug. |
 
 ## Wat Ghost niet kan opvangen
@@ -161,6 +163,35 @@ op te ruimen. Daarom ruimt Ghost zelf op, op al deze momenten:
 
 In die gevallen: sluit je iPhone aan en start Ghost opnieuw. De schone start zet het recht.
 
+## Als de verbinding steeds wegvalt
+
+Zie je vaak de oranje balk, of de melding "Verbinding hersteld" met het advies over de kabel? Dan is
+de USB-verbinding wankel. Ghost vangt dat op, maar de oorzaak zit buiten Ghost. Probeer in deze volgorde:
+
+1. Steek de kabel **rechtstreeks in de laptop**, niet in een USB-hub, dockingstation of beeldscherm.
+2. Gebruik de **originele kabel** van Apple, of een andere kabel die ook data doorgeeft.
+3. Probeer een **andere USB-poort**.
+4. Laat de iPhone **ontgrendeld** liggen tot de route loopt.
+5. Sluit iTunes en andere programma's die met de iPhone praten.
+
+Bluetooth is geen alternatief: Apple biedt de ontwikkelaarsfunctie waar Ghost op draait alleen aan via
+de kabel (en, omslachtiger, via wifi). Via Bluetooth bestaat die functie niet.
+
+## Een diagnose maken en opsturen
+
+Werkt Ghost bij jou (of bij een vriend) niet goed? Dubbelklik dan op **`diagnose.bat`**.
+
+1. Sluit Ghost eerst als dat nog open staat.
+2. Sluit de iPhone aan en ontgrendel hem.
+3. Dubbelklik op `diagnose.bat` en wacht ongeveer een halve minuut.
+4. Er opent een map waarin het bestand `ghost-diagnose.txt` is geselecteerd. Stuur dat bestand op.
+
+In het bestand staat: de versies, of de Apple-service draait, wat Windows aan de USB-poort ziet, het
+model en de iOS-versie, de uitslag van elke controle, een test van 20 seconden die meet of de
+verbinding stabiel is, en de laatste regels van het logbestand. Er staat **geen** naam of serienummer
+van de iPhone in en geen exacte coördinaten. De test vraagt 20 keer je echte locatie terug; dat kan
+geen kwaad en zet een eventuele nep-locatie meteen uit.
+
 ## Als het niet werkt
 
 | Wat je ziet | Wat je doet |
@@ -168,6 +199,7 @@ In die gevallen: sluit je iPhone aan en start Ghost opnieuw. De schone start zet
 | "Ghost kon het hulpprogramma uv niet ophalen" | Controleer je internet en dubbelklik opnieuw. Lukt het niet, volg dan de stappen in het venster. |
 | "Veiligheidscontrole mislukt" | Het gedownloade bestand was niet het officiele bestand van uv. Ghost heeft het weggegooid. Probeer het later opnieuw; blijft het, meld het dan. |
 | "De ZIP is nog niet uitgepakt" | Je hebt `start.bat` geopend vanuit de ZIP. Klik met rechts op de ZIP > **Alles uitpakken** en start vanuit de uitgepakte map. |
+| "Windows ziet je iPhone, maar de Apple-service geeft hem niet door" | De kabel is goed. Ontgrendel de iPhone en tik op **Vertrouw**; haal de kabel eruit en steek hem er weer in; open iTunes en kijk of de iPhone daar verschijnt. Zo niet: herstart de laptop met de iPhone aangesloten. |
 | "Ghost draait al" | Er staat nog een zwart venster van Ghost open. Gebruik dat, of sluit het eerst. |
 | "Poort 8765 is al in gebruik door een ander programma" | Open PowerShell in de map van Ghost en plak: `uv run python -m ghost web --port 8766` |
 | De pagina zegt "Geen contact met Ghost" | Het zwarte venster is gesloten. Dubbelklik opnieuw op `start.bat`. |

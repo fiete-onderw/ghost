@@ -335,6 +335,20 @@ def create_app(
             return refused(error)
         return ok()
 
+    @app.post("/api/route/continue")
+    async def route_continue() -> JSONResponse:
+        """Hervat een route die door een weggevallen verbinding is afgebroken."""
+        try:
+            await controller.continue_route()
+        except ControllerError as error:
+            return refused(error)
+        return ok()
+
+    @app.post("/api/route/forget")
+    async def route_forget() -> JSONResponse:
+        controller.forget_route()
+        return ok()
+
     @app.post("/api/route/speed")
     async def route_speed(body: SpeedBody) -> JSONResponse:
         try:
