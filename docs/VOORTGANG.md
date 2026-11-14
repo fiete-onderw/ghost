@@ -184,7 +184,7 @@ en een bevestigde e-mail. Stand van zaken:
 
 ## Robuuste verbinding (14 nov 2026)
 
-Aanleiding: bij een vriend van de gebruiker (iOS-versie nog onbekend) meldde Ghost eerst
+Aanleiding: bij een vriend van de gebruiker (iOS 27.3, build 24C5037i; dat ziet eruit als een bètaversie) meldde Ghost eerst
 langdurig "Geen iPhone gevonden" terwijl Windows de iPhone wel zag; later werkte een vaste plek,
 maar kort na het starten van een route viel alles weg. Er is GEEN logbestand van dat voorval, dus
 de oorzaak van het wegvallen zelf is niet vastgesteld. Wel vastgesteld in de code:
@@ -224,7 +224,8 @@ veiligheid zwakker: valt wifi weg, dan blijft de nep-locatie staan en kan Ghost 
 
 Nog te doen zodra er een logbestand of diagnose van de vriend is: de echte oorzaak van het
 wegvallen bepalen (kandidaten: kabel/poort/hub, de iPhone die vergrendelt, USB-energiebeheer van
-Windows, de userspace-tunnel zelf).
+Windows, de userspace-tunnel zelf, of de iOS-bèta: pymobiledevice3 11.53.0 is mogelijk niet
+getest op 27.3 bèta. Een vaste plek werkte wel; pas de route (elke seconde een punt) ging mis).
 
 ## Handmatige testresultaten (13 nov 2026, iOS 27, Windows)
 
