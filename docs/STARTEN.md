@@ -9,10 +9,10 @@ Dit is de gewone manier om Ghost te gebruiken: dubbelklikken, en dan alles in je
 - Een Windows-laptop (64-bit).
 - iTunes van de website van Apple: <https://www.apple.com/itunes/download/win64>
   (niet de versie uit de Microsoft Store).
-- Het hulpprogramma `uv`: <https://docs.astral.sh/uv/>
 - Een iPhone met iOS 17.4 of hoger en een USB-kabel die ook data doorgeeft.
 
-Heb je de terminal-commando's (`status`, `set`, `clear`) al eens gebruikt? Dan heb je dit allemaal al.
+Python, uv en Git hoef je **niet** zelf te installeren. Ghost haalt de eerste keer zelf op wat
+het nodig heeft (zie stap 2).
 
 ## Stap 1: de nieuwste versie downloaden
 
@@ -27,8 +27,16 @@ Je oude map van Ghost mag je weggooien. Je logbestanden staan daar niet in; die 
 
 Wat je hoort te zien:
 
-1. Er opent een zwart venster. De **allereerste keer** in een nieuwe map duurt dit een paar
-   minuten: dan worden de onderdelen gedownload. Daarna gaat het in een paar seconden.
+1. Er opent een zwart venster. De **allereerste keer** duurt dit een paar minuten. Ghost
+   downloadt dan:
+   - het hulpprogramma **uv** (ongeveer 25 MB), alleen als dat nog niet op je laptop staat. Je ziet
+     dan `Eenmalig: Ghost haalt het hulpprogramma uv op.` en daarna
+     `uv is klaar (controlecode klopt).` Ghost controleert met een vaste controlecode dat het
+     echt het officiele bestand is; zo niet, dan gooit Ghost het weg en stopt;
+   - **Python** en de onderdelen van Ghost.
+
+   Alles komt in `%LOCALAPPDATA%\Ghost` en in de map `.venv` naast Ghost. Er verandert verder
+   niets aan Windows. Daarna start Ghost in een paar seconden.
 2. In het zwarte venster staat `Ghost 0.1.0 draait.` en het adres `http://127.0.0.1:8765`.
 3. Je browser opent vanzelf met de Ghost-pagina. Gebeurt dat niet, typ dan zelf
    `http://127.0.0.1:8765` in de adresbalk.
@@ -157,7 +165,9 @@ In die gevallen: sluit je iPhone aan en start Ghost opnieuw. De schone start zet
 
 | Wat je ziet | Wat je doet |
 | --- | --- |
-| Het zwarte venster zegt dat `uv` niet gevonden is | Volg de stappen in het venster. Werkt `uv` wel in PowerShell? Herstart dan je laptop. |
+| "Ghost kon het hulpprogramma uv niet ophalen" | Controleer je internet en dubbelklik opnieuw. Lukt het niet, volg dan de stappen in het venster. |
+| "Veiligheidscontrole mislukt" | Het gedownloade bestand was niet het officiele bestand van uv. Ghost heeft het weggegooid. Probeer het later opnieuw; blijft het, meld het dan. |
+| "De ZIP is nog niet uitgepakt" | Je hebt `start.bat` geopend vanuit de ZIP. Klik met rechts op de ZIP > **Alles uitpakken** en start vanuit de uitgepakte map. |
 | "Ghost draait al" | Er staat nog een zwart venster van Ghost open. Gebruik dat, of sluit het eerst. |
 | "Poort 8765 is al in gebruik door een ander programma" | Open PowerShell in de map van Ghost en plak: `uv run python -m ghost web --port 8766` |
 | De pagina zegt "Geen contact met Ghost" | Het zwarte venster is gesloten. Dubbelklik opnieuw op `start.bat`. |

@@ -38,9 +38,11 @@ Ghost itself runs entirely on your computer. Only these requests go to the inter
 
 ## Start
 
-Requirements: Windows 64-bit, iTunes from [apple.com](https://www.apple.com/itunes/download/win64), [uv](https://docs.astral.sh/uv/), an iPhone with iOS 17.4 or later.
+Requirements: Windows 64-bit, iTunes from [apple.com](https://www.apple.com/itunes/download/win64) (not the Microsoft Store version), an iPhone with iOS 17.4 or later. You do **not** need to install Python, uv or Git.
 
-Double-click `start.bat`. Your browser opens at `http://127.0.0.1:8765`. Keep the black window open while you use Ghost.
+Download the ZIP from GitHub (**Code > Download ZIP**), extract it and double-click `start.bat`. Your browser opens at `http://127.0.0.1:8765`. Keep the black window open while you use Ghost.
+
+The first start takes a few minutes. If [uv](https://docs.astral.sh/uv/) is not installed, `start.bat` downloads a pinned uv release (0.11.32) from uv's official GitHub page, checks it against a fixed SHA256 checksum and deletes it if it does not match (`scripts/installeer-uv.ps1`). uv then installs Python 3.13 and the hash-locked dependencies from `uv.lock`. Everything goes into `%LOCALAPPDATA%\Ghost` and a `.venv` folder next to Ghost: no PATH changes, no administrator rights. To uninstall, delete the Ghost folder and `%LOCALAPPDATA%\Ghost`.
 
 No iPhone at hand? Double-click `start-demo.bat` to try the page with a fake iPhone.
 

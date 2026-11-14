@@ -164,6 +164,16 @@ en een bevestigde e-mail. Stand van zaken:
 - Stap 6: `ghost/web/static/` (kaart met Leaflet + OpenStreetMap, statuspaneel met knoppen,
   balk "NEP-LOCATIE ACTIEF", rode stopknop + Esc, auto-stop-timer).
 - `start.bat` en `start-demo.bat` (dubbelklikken; de browser gaat vanzelf open).
+- `scripts/installeer-uv.ps1` (14 nov 2026): staat uv niet op de laptop, dan halen
+  `start.bat` en `start-demo.bat` zelf uv 0.11.32 op van de officiele GitHub-release,
+  gecontroleerd met een vaste SHA256 (x86_64 en aarch64), naar
+  `%LOCALAPPDATA%\Ghost\tools\uv-0.11.32\uv.exe`. Python en cache van die uv komen in
+  `%LOCALAPPDATA%\Ghost\python` en `\cache`. Geen PATH-wijziging, geen admin. Een bestaande
+  uv (PATH of `%USERPROFILE%\.local\bin`) gaat voor. De gebruiker hoeft dus alleen iTunes te
+  installeren. Versie staat in de .bat-bestanden en het script; `tests/test_start_scripts.py`
+  bewaakt dat die gelijk zijn, en dat de bestanden CRLF en ASCII zijn.
+  Bijwerken naar een nieuwere uv: versie op drie plekken aanpassen en de twee hashes uit de
+  `.sha256`-bestanden van die GitHub-release overnemen.
 - 379 tests, allemaal groen op Linux (cloud). De 113 oudste waren ook groen op de
   Windows-laptop; de rest is daar nog niet gedraaid.
 - De pagina is in een echte browser (Chromium) getest tegen de nep-iPhone: plek kiezen,
@@ -198,6 +208,9 @@ Niets hiervan kon in de cloud getest worden: daar is geen Windows en geen iPhone
 
 - [ ] `uv run pytest` op de Windows-laptop: 379 tests groen?
 - [ ] `start.bat` dubbelklikken: zwart venster, browser opent `http://127.0.0.1:8765`.
+- [ ] `start.bat` op een laptop ZONDER uv (of na het tijdelijk hernoemen van
+      `%USERPROFILE%\.local\bin\uv.exe`): verschijnt "uv is klaar (controlecode klopt)",
+      en start Ghost daarna? NIET getest: PowerShell kon in de cloud niet worden uitgevoerd.
 - [ ] Statuspaneel wordt groen ("Klaar: ...") met de echte iPhone, en meldt "Schone start gedaan".
 - [ ] Plek zetten via de kaart: stip in Apple Kaarten verspringt, gele balk verschijnt.
 - [ ] Rode knop: stip terug. Daarna hetzelfde met Esc.
